@@ -58,7 +58,7 @@ def main(argv=None) -> int:
     r.add_argument("steps", nargs="+", help="단계 또는 묶음: local, cloud, all, " + ", ".join(STEPS))
     r.add_argument("--model-uri-override", default=None,
                    help="deploy 에서 Lambda 의 MODEL_URI 를 이 값으로 바꾼다 (오류 재현용)")
-    r.add_argument("--status-name", default=None, help="status 결과 파일 이름 (results/cloud/<이름>.json)")
+    r.add_argument("--status-name", default=None, help="status 결과 파일 이름. status 로 시작해야 함 (results/cloud/<이름>.json)")
 
     sub.add_parser("status", help="AWS 자원 상태 조회 (= run status)")
     sub.add_parser("cleanup", help="AWS 자원 삭제 후 상태 재조회 (= run cleanup)")

@@ -176,7 +176,7 @@ class Cloud:
         return names
 
     def find_buckets(self) -> list[str]:
-        return sorted(n for n in self.all_bucket_names() if n.startswith(self.bucket_prefix))
+        return sorted(n for n in self.all_bucket_names() if self.name_region(n) == self.region)
 
     def name_region(self, name: str) -> str | None:
         m = re.fullmatch(re.escape(self.bucket_base) + r"-([a-z]{2}(?:-[a-z]+)+-\d+)-[0-9a-f]{8}", name)
@@ -198,11 +198,11 @@ class Cloud:
             raise
         return loc or "us-east-1"
 
-    def bucket_tags(self) -> dict:
+    def bucket_tags(self, name: str | None = None) -> dict:
         from botocore.exceptions import ClientError
 
         try:
-            return {t["Key"]: t["Value"] for t in self.s3.get_bucket_tagging(Bucket=self.bucket)["TagSet"]}
+            return {t["Key"]: t["Value"] for t in self.s3.get_bucket_tagging(Bucket=name or self.bucket)["TagSet"]}
         except ClientError as e:
             if _code(e) in ("NoSuchTagSet", "NoSuchTagSetError"):
                 return {}
@@ -222,14 +222,48 @@ class Cloud:
         if not self.ours(tags):
             raise NotOurs(f"{kind} 에 이 과제의 태그가 없어 건드리지 않습니다")
 
-    def bucket_is_empty(self) -> bool:
-        page = self.s3.list_object_versions(Bucket=self.bucket, MaxKeys=1)
+    def bucket_is_empty(self, name: str | None = None) -> bool:
+        page = self.s3.list_object_versions(Bucket=name or self.bucket, MaxKeys=1)
         return not page.get("Versions") and not page.get("DeleteMarkers")
 
-    def leftover_bucket(self, tags: dict) -> bool:
-        named = re.fullmatch(re.escape(self.bucket_prefix) + "[0-9a-f]{8}", self.bucket)
-        recorded = self.bucket in created_buckets()
-        return not tags and (bool(named) or recorded) and self.bucket_is_empty()
+    def leftover_bucket(self, tags: dict, name: str | None = None) -> bool:
+        name = name or self.bucket
+        named = re.fullmatch(re.escape(self.bucket_prefix) + "[0-9a-f]{8}", name)
+        recorded = name in created_buckets()
+        return not tags and (bool(named) or recorded) and self.bucket_is_empty(name)
+
+    def bucket_missing(self, name: str) -> bool:
+        from botocore.exceptions import ClientError
+
+        try:
+            self.s3.head_bucket(Bucket=name)
+        except ClientError as e:
+            return _code(e) in NOT_FOUND
+        return False
+
+    def ours_or_unknown(self, get_tags) -> bool | None:
+        try:
+            return self.ours(get_tags())
+        except Exception:
+            return None
+
+    def find_log_group(self) -> dict | None:
+        for page in self.logs.get_paginator("describe_log_groups").paginate(logGroupNamePrefix=self.log_group):
+            for g in page.get("logGroups", []):
+                if g["logGroupName"] == self.log_group:
+                    return g
+        return None
+
+    def foreign_function_uses_role(self) -> bool:
+        from botocore.exceptions import ClientError
+
+        try:
+            conf = self.lam.get_function(FunctionName=self.fn)["Configuration"]
+        except self.lam.exceptions.ResourceNotFoundException:
+            return False
+        except ClientError:
+            return True
+        return conf.get("Role") == self.role_arn()
 
     def tag_bucket(self) -> None:
         self.s3.put_bucket_tagging(Bucket=self.bucket, Tagging={
@@ -240,8 +274,7 @@ class Cloud:
             self.require_ours(f"Lambda 함수 {self.fn}", self.function_tags())
 
     def log_group_exists(self) -> bool:
-        groups = self.logs.describe_log_groups(logGroupNamePrefix=self.log_group)["logGroups"]
-        return any(g["logGroupName"] == self.log_group for g in groups)
+        return self.find_log_group() is not None
 
     def check_log_group(self) -> None:
         if self.log_group_exists():
@@ -503,12 +536,17 @@ class Cloud:
             if _code(e) in NOT_FOUND:
                 return {"exists": False, "name": name}
             return {"exists": None, "name": name, "error": _code(e)}
-        n, size = 0, 0
-        for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=name):
-            for v in page.get("Versions", []):
-                n += 1
-                size += v["Size"]
-        return {"exists": True, "name": name, "object_versions": n, "total_mb": round(size / 1e6, 2)}
+        try:
+            tags = self.bucket_tags(name)
+            ours = self.ours(tags) or self.leftover_bucket(tags, name)
+            n, size = 0, 0
+            for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=name):
+                for v in page.get("Versions", []):
+                    n += 1
+                    size += v["Size"]
+        except ClientError as e:
+            return {"exists": True, "name": name, "ours": None, "error": _code(e)}
+        return {"exists": True, "name": name, "ours": ours, "object_versions": n, "total_mb": round(size / 1e6, 2)}
 
     def bucket_status(self) -> dict:
         found = [self.one_bucket_status(b) for b in self.buckets]
@@ -518,7 +556,9 @@ class Cloud:
             return found[0]
         states = [b["exists"] for b in found]
         combined = None if None in states else any(states)
-        return {"exists": combined, "buckets": found}
+        owners = [b.get("ours") for b in found if b["exists"]]
+        ours = True if True in owners else (None if None in owners else False)
+        return {"exists": combined, "ours": ours, "buckets": found}
 
     def regional_status(self) -> dict:
         from botocore.exceptions import ClientError
@@ -531,7 +571,8 @@ class Cloud:
             for page in self.lam.get_paginator("list_versions_by_function").paginate(FunctionName=self.fn):
                 versions += [v["Version"] for v in page["Versions"]]
             out["lambda_function"] = {
-                "exists": True, "state": conf.get("State"), "runtime": conf["Runtime"],
+                "exists": True, "ours": self.ours_or_unknown(self.function_tags),
+                "state": conf.get("State"), "runtime": conf["Runtime"],
                 "memory_mb": conf["MemorySize"], "timeout_s": conf["Timeout"],
                 "last_modified": conf["LastModified"], "versions": versions,
                 "reserved_concurrency": (f.get("Concurrency") or {}).get("ReservedConcurrentExecutions"),
@@ -543,12 +584,12 @@ class Cloud:
             out["lambda_function"] = {"exists": None, "error": _code(e)}
         out["s3_bucket"] = self.bucket_status()
         try:
-            groups = self.logs.describe_log_groups(logGroupNamePrefix=self.log_group)["logGroups"]
+            g = self.find_log_group()
         except ClientError as e:
             out["log_group"] = {"exists": None, "error": _code(e)}
             return out
-        g = next((x for x in groups if x["logGroupName"] == self.log_group), None)
-        out["log_group"] = ({"exists": True, "retention_days": g.get("retentionInDays"),
+        out["log_group"] = ({"exists": True, "ours": self.ours_or_unknown(self.log_group_tags),
+                             "retention_days": g.get("retentionInDays"),
                              "stored_bytes": g.get("storedBytes")} if g else {"exists": False})
         return out
 
@@ -558,7 +599,7 @@ class Cloud:
         try:
             role = self.iam.get_role(RoleName=self.role)["Role"]
             pols = self.iam.list_role_policies(RoleName=self.role)["PolicyNames"]
-            return {"exists": True, "inline_policies": pols,
+            return {"exists": True, "ours": self.ours_or_unknown(self.role_tags), "inline_policies": pols,
                     "permissions_boundary": (role.get("PermissionsBoundary") or {}).get("PermissionsBoundaryArn")}
         except self.iam.exceptions.NoSuchEntityException:
             return {"exists": False}
@@ -588,6 +629,8 @@ class Cloud:
             done.append({"resource": name, "result": f"skipped: {e}"})
         except ClientError as e:
             done.append({"resource": name, "result": "not_found" if _code(e) in NOT_FOUND else f"error: {_code(e)}"})
+        except Exception as e:
+            done.append({"resource": name, "result": f"error: {type(e).__name__}"})
 
     def cleanup_regional(self) -> list[dict]:
         from botocore.exceptions import ClientError
@@ -605,8 +648,8 @@ class Cloud:
         def del_bucket(name):
             self.s3.head_bucket(Bucket=name)
             self.bucket = name
-            tags = self.bucket_tags()
-            if not self.ours(tags) and not self.leftover_bucket(tags):
+            tags = self.bucket_tags(name)
+            if not self.ours(tags) and not self.leftover_bucket(tags, name):
                 self.require_ours(f"버킷 {name}", tags)
             for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=name):
                 objs = [{"Key": v["Key"], "VersionId": v["VersionId"]}
@@ -693,10 +736,20 @@ def all_gone(resources: dict) -> bool:
     return not remaining(resources)
 
 
+def _ours_left(v: dict) -> bool:
+    return v.get("exists") is not False and v.get("ours") is not False
+
+
 def remaining(resources: dict) -> list[str]:
-    left = [] if resources["iam_role"].get("exists") is False else ["iam_role"]
+    left = ["iam_role"] if _ours_left(resources["iam_role"]) else []
     return left + [f"{region}:{kind}" for region, res in resources["regions"].items()
-                   for kind, v in res.items() if v.get("exists") is not False]
+                   for kind, v in res.items() if _ours_left(v)]
+
+
+def not_ours(resources: dict) -> list[str]:
+    found = ["iam_role"] if resources["iam_role"].get("exists") and resources["iam_role"].get("ours") is False else []
+    return found + [f"{region}:{kind}" for region, res in resources["regions"].items()
+                    for kind, v in res.items() if v.get("exists") and v.get("ours") is False]
 
 
 def _local_key() -> bytes:
@@ -735,30 +788,34 @@ def other_account_regions(account: str) -> list[str]:
 NAME_KEYS = ("function", "role", "permissions_boundary", "bucket_prefix")
 
 
-def pending_deploys() -> dict[tuple, dict]:
+def deploy_history() -> dict:
     records, _ = read_run_log()
-    pending = {}
+    pending, buckets, creating = {}, set(), set()
     for r in records:
         info = r.get("cloud") or {}
         names = tuple(info.get(k) for k in NAME_KEYS)
         summary = r.get("summary") if isinstance(r.get("summary"), dict) else {}
-        complete = all(isinstance(n, str) and n for n in names)
-        if r.get("step") == "deploy" and info.get("resources_touched") is True and complete:
-            entry = pending.setdefault(names, {"buckets": set(), "creating": set()})
+        if r.get("step") == "deploy" and info.get("resources_touched") is True:
+            if all(isinstance(n, str) and n for n in names):
+                pending[names] = True
             for field in ("bucket", "creating_bucket"):
                 if isinstance(info.get(field), str) and info[field]:
-                    entry["buckets"].add(info[field])
+                    buckets.add(info[field])
             if isinstance(info.get("creating_bucket"), str) and info["creating_bucket"]:
-                entry["creating"].add(info["creating_bucket"])
-        elif r.get("step") == "cleanup" and summary.get("all_gone") is True:
-            pending.pop(names, None)
-    return pending
+                creating.add(info["creating_bucket"])
+        elif r.get("step") == "cleanup":
+            if summary.get("all_gone") is True:
+                pending.pop(names, None)
+            gone = summary.get("buckets_gone") if isinstance(summary.get("buckets_gone"), list) else []
+            buckets -= {b for b in gone if isinstance(b, str)}
+            creating -= {b for b in gone if isinstance(b, str)}
+    return {"pending": list(pending), "buckets": buckets, "creating": creating}
 
 
 def renamed_leftovers(cfg: dict) -> tuple[list[dict], bool]:
     c = cfg["cloud"]
     current = (c["function_name"], c["role_name"], c["permissions_boundary"], c["bucket_prefix"])
-    pending = pending_deploys()
+    pending = deploy_history()["pending"]
     others = [dict(zip(NAME_KEYS, n, strict=True)) for n in pending if n != current]
     return others, current in pending
 
@@ -768,7 +825,7 @@ RENAMED = ("설정의 이름(함수, 역할, 권한 경계, 버킷 접두어)을
 
 
 def created_buckets() -> set[str]:
-    return {b for entry in pending_deploys().values() for b in entry["creating"]}
+    return deploy_history()["creating"]
 
 
 def run_log_regions() -> set[str]:
@@ -858,13 +915,15 @@ def deploy_preflight(cfg: dict, lambda_cfg: dict) -> dict:
     meta = load_json(model_dir(cfg) / "metadata.json")
     pdir = ROOT / cfg["data"]["processed_dir"]
     mismatch = model_mismatches(meta, cfg)
-    if not mismatch and estimator_mismatch(joblib.load(model_dir(cfg) / "model.joblib"), cfg):
+    file_sha = sha256_file(model_dir(cfg) / "model.joblib")
+    if not mismatch and file_sha == meta.get("model_sha256") \
+            and estimator_mismatch(joblib.load(model_dir(cfg) / "model.joblib"), cfg):
         mismatch.append("모델 파일의 하이퍼파라미터")
     pkg = _load_or_empty(RESULTS / "cloud" / "package.json")
     zip_path = package.ZIP_PATH
     problems = preflight_problems(
         model_meta=meta,
-        model_file_sha=sha256_file(model_dir(cfg) / "model.joblib"),
+        model_file_sha=file_sha,
         evaluation=_load_or_empty(RESULTS / "evaluation" / "metrics.json"),
         service_check=_load_or_empty(RESULTS / "service_check" / "local.json"),
         package_info=pkg,
@@ -1117,7 +1176,7 @@ NOT_ENABLED = {"InvalidClientTokenId", "UnrecognizedClientException", "AuthFailu
 
 
 def recorded_buckets() -> set[str]:
-    return {b for entry in pending_deploys().values() for b in entry["buckets"]}
+    return deploy_history()["buckets"]
 
 
 def _clouds(ctx) -> tuple[list[Cloud], list[dict]]:
@@ -1167,22 +1226,23 @@ def _status_all(clouds: list[Cloud]) -> dict:
 
 
 def status_complete(resources: dict, unreachable: list[dict]) -> bool:
-    states = [resources["iam_role"].get("exists")]
-    states += [v.get("exists") for r in resources["regions"].values() for v in r.values()]
-    return None not in states and not any(u["blocking"] for u in unreachable)
+    items = [resources["iam_role"], *[v for r in resources["regions"].values() for v in r.values()]]
+    unknown = any(v.get("exists") is None or (v.get("exists") and v.get("ours") is None) for v in items)
+    return not unknown and not any(u["blocking"] for u in unreachable)
 
 
 def step_status(ctx) -> None:
     name = getattr(ctx.args, "status_name", None) or "status"
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
-        raise RuntimeError(f"--status-name 에는 영문, 숫자, _, - 만 쓸 수 있습니다: {name}")
+    if not re.fullmatch(r"status[A-Za-z0-9_-]*", name):
+        raise RuntimeError(f"--status-name 은 status 로 시작하고 영문, 숫자, _, - 만 쓸 수 있습니다: {name}")
     _, broken = read_run_log()
     renamed, _ = renamed_leftovers(ctx.cfg)
     clouds, unreachable = _clouds(ctx)
     resources = _status_all(clouds)
     st = {"checked_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
           "regions_unreachable": unreachable, "run_log_unreadable_lines": broken, "renamed_leftovers": renamed,
-          "other_account_regions": other_account_regions(clouds[0].account), "resources": resources}
+          "other_account_regions": other_account_regions(clouds[0].account), "resources": resources,
+          "not_ours": not_ours(resources)}
     ctx.cloud = {**clouds[0].info(), "regions_checked": st["regions_checked"]}
     st["permissions_boundary"] = clouds[0].boundary_status()
     write_json(ctx.out(f"results/cloud/{name}.json"), st)
@@ -1214,8 +1274,10 @@ def step_cleanup(ctx) -> None:
     deleted = [d for c in clouds for d in c.cleanup_regional()]
     own_unreachable = [u.get("bucket") or u["region"] for u in unreachable if u["blocking"]]
     keep_reasons = []
-    if not all(d["result"] in ("deleted", "not_found") for d in deleted):
+    if not all(d["result"] in ("deleted", "not_found") or d["result"].startswith("skipped") for d in deleted):
         keep_reasons.append("지역 자원이 남았거나 상태를 다 확인하지 못함")
+    if any(c.foreign_function_uses_role() for c in clouds):
+        keep_reasons.append("태그 없는 같은 이름의 함수가 이 역할을 쓰고 있음")
     if own_unreachable:
         keep_reasons.append(f"접속하지 못한 리전이나 위치를 확인하지 못한 버킷 {own_unreachable}")
     if broken:
@@ -1236,14 +1298,20 @@ def step_cleanup(ctx) -> None:
         after = _status_all(clouds)
     errors = [d for d in deleted if d["result"].startswith("error")]
     others = other_account_regions(clouds[0].account)
+    owned = set(clouds[0].all_bucket_names())
+    gone = {d["resource"].split(":s3:", 1)[1] for d in deleted
+            if ":s3:" in d["resource"] and d["result"] in ("deleted", "not_found")}
+    gone |= {n for n in recorded_buckets() - owned if clouds[0].bucket_missing(n)}
+    gone = sorted(n for n in gone if "*" not in n)
     report = {"cleaned_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
               "regions_unreachable": unreachable, "run_log_unreadable_lines": broken, "renamed_leftovers": renamed,
-              "before": before, "actions": deleted, "errors": errors, "after": after,
+              "before": before, "actions": deleted, "errors": errors, "after": after, "not_ours": not_ours(after),
+              "buckets_gone": gone,
               "all_gone": all_gone(after) and not own_unreachable and not broken, "other_account_regions": others}
     write_json(ctx.out("results/cloud/cleanup.json"), report)
     ctx.cloud = {**clouds[0].info(), "regions_checked": report["regions_checked"]}
     ctx.summary = {"all_gone": report["all_gone"], "actions": {d["resource"]: d["result"] for d in deleted},
-                   "other_account_regions": others}
+                   "buckets_gone": gone, "other_account_regions": others}
     problems = []
     if own_unreachable:
         problems.append(f"접속하지 못한 리전이나 위치를 확인하지 못한 버킷 {own_unreachable}")

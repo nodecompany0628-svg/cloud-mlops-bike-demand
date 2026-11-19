@@ -165,7 +165,8 @@ def test_bucket_without_project_tags_is_left_alone(sandbox, monkeypatch):
         keys = [o["Key"] for o in s3.list_objects_v2(Bucket=foreign).get("Contents", [])]
     recs = records(sandbox)
     assert rc_deploy == 1 and "태그" in recs[0]["error"]
-    assert rc_clean == 1 and keys == ["keep.txt"]
+    assert rc_clean == 0 and keys == ["keep.txt"]
+    assert read(sandbox, "results/cloud/cleanup.json")["not_ours"] == ["ap-northeast-2:s3_bucket"]
 
 
 def test_cleanup_also_covers_region_used_by_earlier_deploy(sandbox):
@@ -196,7 +197,8 @@ def test_role_without_project_tags_is_left_alone(sandbox, monkeypatch):
         roles = [r["RoleName"] for r in iam.list_roles()["Roles"]]
     recs = records(sandbox)
     assert rc_deploy == 1 and "IAM 역할" in recs[0]["error"] and created == []
-    assert rc_clean == 1 and "bike-demand-predict-role" in roles and sleeps == []
+    assert rc_clean == 0 and "bike-demand-predict-role" in roles and sleeps == []
+    assert read(sandbox, "results/cloud/cleanup.json")["not_ours"] == ["iam_role"]
 
 
 def test_override_deploy_is_recorded_separately(sandbox):
@@ -316,8 +318,9 @@ def test_cleanup_reports_deployments_from_other_account(sandbox):
 
 def test_status_name_is_validated_before_aws(sandbox):
     rc = run(["status"], status_name="../../x")
+    rc_overwrite = run(["status"], status_name="deploy")
     recs = records(sandbox)
-    assert rc == 1 and "--status-name" in recs[0]["error"]
+    assert rc == 1 and rc_overwrite == 1 and "--status-name" in recs[0]["error"] and "--status-name" in recs[1]["error"]
 
 
 def test_release_rejects_recreated_function_with_same_version_number(sandbox):
@@ -703,6 +706,7 @@ def test_boundary_with_other_content_stops_deploy_before_creating_bucket(sandbox
         buckets = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
         roles = boto3.client("iam", region_name="ap-northeast-2").list_roles()["Roles"]
     assert rc == 1 and "내용이 지금 설정" in records(sandbox)[-1]["error"] and buckets == [] and roles == []
+    assert cloud.deployments() == []
 
 
 def boundary_delete_failing(monkeypatch, codes):
@@ -1018,3 +1022,77 @@ def test_smoke_does_not_invoke_untagged_function(sandbox, monkeypatch):
         rc_eval = run(["cloud-eval"])
     recs = records(sandbox)
     assert rc_smoke == 1 and rc_eval == 1 and "태그" in recs[-1]["error"] and calls == []
+
+
+def test_foreign_log_group_in_recorded_region_does_not_block_cleanup(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        boto3.client("logs", region_name="us-west-2").create_log_group(logGroupName="/aws/lambda/bike-demand-predict")
+        run(["status"], region="us-west-2")
+        rc = run(["cleanup"])
+        groups = boto3.client("logs", region_name="us-west-2").describe_log_groups()["logGroups"]
+        rc_rename = run_with(renamed_config(), "deploy")
+    clean = read(sandbox, "results/cloud/cleanup.json")
+    assert rc == 0 and clean["not_ours"] == ["us-west-2:log_group"] and len(groups) == 1 and rc_rename == 0
+
+
+def test_role_is_kept_while_foreign_function_uses_it(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        role_arn = boto3.client("iam", region_name="ap-northeast-2").get_role(
+            RoleName="bike-demand-predict-role")["Role"]["Arn"]
+        boto3.client("lambda", region_name="us-west-2").create_function(
+            FunctionName="bike-demand-predict", Runtime="python3.12", Role=role_arn,
+            Handler="lambda_function.lambda_handler", Code={"ZipFile": (sandbox / "lambda_package.zip").read_bytes()})
+        run(["status"], region="us-west-2")
+        rc = run(["cleanup"])
+        roles = [r["RoleName"] for r in boto3.client("iam", region_name="ap-northeast-2").list_roles()["Roles"]]
+    rec = records(sandbox)[-1]
+    clean = failed_result(sandbox, rec, "results/cloud/cleanup.json")
+    role_action = next(a for a in clean["actions"] if a["resource"] == "iam:bike-demand-predict-role")
+    assert rc == 1 and roles == ["bike-demand-predict-role"] and "태그 없는 같은 이름의 함수" in role_action["result"]
+
+
+def test_cleanup_elsewhere_does_not_drop_recorded_bucket(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    cfg = load_config()
+    cfg["cloud"]["bucket"] = "bike-demand-mlops-mine"
+    with mock_aws():
+        assert run_with(cfg, "deploy") == 0
+        with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"run_id": "z", "step": "cleanup", "status": "failed",
+                                "cloud": {"region": "ap-northeast-2", **CURRENT_NAMES},
+                                "summary": {"all_gone": True, "buckets_gone": []}}) + "\n")
+        assert run(["status"]) == 0
+        seen = read(sandbox, "results/cloud/status.json")["resources"]["regions"]["ap-northeast-2"]["s3_bucket"]
+        rc = run(["cleanup"])
+        left = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
+    assert seen["exists"] is True and rc == 0 and left == [] and cloud.recorded_buckets() == set()
+
+
+def test_unexpected_error_during_cleanup_still_writes_result(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        assert run(["deploy"]) == 0
+
+        def timeout(self):
+            raise RuntimeError("read timeout")
+        monkeypatch.setattr(cloud.Cloud, "log_group_tags", timeout)
+        rc = run(["cleanup"])
+    rec = records(sandbox)[-1]
+    clean = failed_result(sandbox, rec, "results/cloud/cleanup.json")
+    assert rc == 1 and any(e["result"] == "error: RuntimeError" for e in clean["errors"])
+
+
+def test_bucket_that_only_starts_with_the_prefix_is_not_ours(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="ap-northeast-2")
+        s3.create_bucket(Bucket="bike-demand-mlops-ap-northeast-2-mydata",
+                         CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"})
+        rc_deploy = run(["deploy"])
+        rc_clean = run(["cleanup"])
+        left = [b["Name"] for b in s3.list_buckets()["Buckets"]]
+    assert rc_deploy == 0 and rc_clean == 0 and left == ["bike-demand-mlops-ap-northeast-2-mydata"]
