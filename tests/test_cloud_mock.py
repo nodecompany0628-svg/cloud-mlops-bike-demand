@@ -68,6 +68,8 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud, "deploy_preflight",
                         lambda cfg, lcfg: {"meta": meta, "zip_sha256": sha256_file(pkg), "zip_path": pkg})
     monkeypatch.setattr(cloud, "REGIONS_STATE", tmp_path / "state" / "regions.json")
+    monkeypatch.setattr(cloud, "RESULTS", out / "results")
+    shutil.copytree(ROOT / "results" / "evaluation", out / "results" / "evaluation")
 
     local = LocalInvoker(load_config())
 
@@ -106,7 +108,7 @@ def test_cloud_steps_end_to_end(sandbox):
     deploy = read(sandbox, "results/cloud/deploy.json")
     assert recs[0]["cloud"]["function_version"] == "1"
     assert deploy["function"]["action"] == "updated" and deploy["function"]["version"].isdigit()
-    assert "/models/hgb-v1/model.joblib?versionId=" in deploy["env"]["MODEL_URI"]
+    assert f"/models/hgb-v1/{deploy['env']['MODEL_SHA256'][:12]}/model.joblib?versionId=" in deploy["env"]["MODEL_URI"]
     assert deploy["model_uri_override"] is False
     assert deploy["cloud"]["bucket"].startswith("bike-demand-mlops-ap-northeast-2-")
     assert deploy["cloud"]["caller_type"] == "user" and "caller" not in deploy["cloud"]
@@ -119,7 +121,8 @@ def test_cloud_steps_end_to_end(sandbox):
 
     release = read(sandbox, "results/cloud/release.json")
     assert release["alias"]["alias"] == "live" and release["function_version"] == smoke["function_version"]
-    assert release["previous_live"] is None
+    assert release["previous_live"] is None and release["identity"] == smoke["identity"]
+    assert recs[4]["model"]["sha256"] == deploy["env"]["MODEL_SHA256"]
 
     ev = read(sandbox, "results/cloud/cloud_eval.json")
     assert ev["identical_to_local"] and ev["rows"] == 2888 and ev["batches"] == 6
@@ -299,3 +302,27 @@ def test_status_name_is_validated_before_aws(sandbox):
     rc = run(["status"], status_name="../../x")
     recs = records(sandbox)
     assert rc == 1 and "--status-name" in recs[0]["error"]
+
+
+def test_release_rejects_recreated_function_with_same_version_number(sandbox):
+    with mock_aws():
+        assert run(["deploy", "smoke", "cloud-eval", "release", "cleanup"]) == 0
+        args = make_args(steps=["deploy"], model_uri_override="s3://x/models/hgb-v1/model.pkl")
+        assert runlog.run_steps(["deploy"], STEPS, load_config(), args, DEFAULT_CONFIG) == 0
+        rc = run(["release"])
+        lam = boto3.client("lambda", region_name="ap-northeast-2")
+        try:
+            alias = lam.get_alias(FunctionName="bike-demand-predict", Name="live")
+        except lam.exceptions.ResourceNotFoundException:
+            alias = None
+    recs = records(sandbox)
+    assert rc == 1 and "통과한 기록이 없습니다" in recs[-1]["error"] and alias is None
+
+
+def test_release_rejects_untested_region(sandbox):
+    with mock_aws():
+        assert run(["deploy", "smoke", "cloud-eval"]) == 0
+        assert run(["deploy"], region="us-west-2") == 0
+        rc = run(["release"], region="us-west-2")
+    recs = records(sandbox)
+    assert rc == 1 and "us-west-2" in recs[-1]["error"]

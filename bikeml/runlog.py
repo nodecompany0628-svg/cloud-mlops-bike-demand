@@ -59,7 +59,7 @@ def env_info() -> dict:
 
 
 def _path_variants(path: Path) -> list[str]:
-    if path == Path(path.anchor) or len(path.parts) < 3:
+    if path == Path(path.anchor):
         return []
     raw = str(path)
     return [raw.replace("\\", "\\" * 4), raw.replace("\\", "\\" * 2), raw, path.as_posix()]

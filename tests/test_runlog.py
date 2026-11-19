@@ -156,3 +156,10 @@ def test_sanitize_ignores_path_case():
     for text in (raw.lower(), raw.upper(), json.dumps(raw.lower())):
         clean = runlog.sanitize(text, [])
         assert Path.home().name.lower() not in clean.lower()
+
+
+def test_sanitize_hides_short_repo_path(monkeypatch):
+    short = Path(Path.cwd().anchor) / "work"
+    monkeypatch.setattr(runlog, "ROOT", short)
+    clean = runlog.sanitize(str(short / "config" / "pipeline.json"), [])
+    assert clean.startswith("<REPO>") and "work" not in clean

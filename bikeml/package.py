@@ -61,14 +61,17 @@ def build_package(lambda_cfg: dict) -> dict:
         shutil.copy2(src, dst)
 
     precompiled = f"{sys.version_info.major}.{sys.version_info.minor}" == py
+    compiled, pyc_failed = 0, []
     if precompiled:
-        for src in sorted(PKG_DIR.rglob("*.py")):
+        for src in sorted(PKG_DIR.rglob("*.py"), key=lambda p: p.relative_to(PKG_DIR).as_posix()):
+            rel_src = src.relative_to(PKG_DIR).as_posix()
             try:
                 py_compile.compile(str(src), cfile=importlib.util.cache_from_source(str(src)),
-                                   dfile="/var/task/" + src.relative_to(PKG_DIR).as_posix(), doraise=True,
+                                   dfile="/var/task/" + rel_src, doraise=True,
                                    invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+                compiled += 1
             except py_compile.PyCompileError:
-                pass
+                pyc_failed.append(rel_src)
 
     unzipped = _dir_size(PKG_DIR)
     if unzipped > UNZIPPED_LIMIT:
@@ -96,6 +99,8 @@ def build_package(lambda_cfg: dict) -> dict:
         "runtime": lambda_cfg["runtime"],
         "architecture": lambda_cfg["architecture"],
         "precompiled_pyc": precompiled,
+        "pyc_compiled": compiled,
+        "pyc_failed": pyc_failed,
         "platforms": platforms,
         "installed": installed,
         "app_files": {arc: sha256_file(src) for arc, src in APP_FILES.items()},

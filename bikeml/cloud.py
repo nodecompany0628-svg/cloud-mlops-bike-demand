@@ -36,6 +36,7 @@ UPLOAD_WAIT_S = 30
 ALIAS = "live"
 FUNCTION_DESCRIPTION = "bike-demand hourly rental prediction"
 REGIONS_STATE = ROOT / ".state" / "regions.json"
+RESULTS = ROOT / "results"
 
 
 class NotOurs(Exception):
@@ -95,8 +96,8 @@ class Cloud:
     def role_arn(self) -> str:
         return f"arn:aws:iam::{self.account}:role/{self.role}"
 
-    def model_key(self) -> str:
-        return f"models/{self.cfg['model']['version']}/model.joblib"
+    def model_prefix(self, model_sha: str) -> str:
+        return f"models/{self.cfg['model']['version']}/{model_sha[:12]}"
 
     def ours(self, tags: dict) -> bool:
         return all(tags.get(k) == v for k, v in self.tags.items())
@@ -137,6 +138,10 @@ class Cloud:
         page = self.s3.list_object_versions(Bucket=self.bucket, MaxKeys=1)
         return not page.get("Versions") and not page.get("DeleteMarkers")
 
+    def leftover_bucket(self, tags: dict) -> bool:
+        named = re.fullmatch(re.escape(self.bucket_prefix) + "[0-9a-f]{8}", self.bucket)
+        return not tags and bool(named) and self.bucket_is_empty()
+
     def tag_bucket(self) -> None:
         self.s3.put_bucket_tagging(Bucket=self.bucket, Tagging={
             "TagSet": [{"Key": k, "Value": v} for k, v in self.tags.items()]})
@@ -147,8 +152,7 @@ class Cloud:
             tags = self.bucket_tags()
             created = "exists"
             if not self.ours(tags):
-                ours_by_name = re.fullmatch(re.escape(self.bucket_prefix) + "[0-9a-f]{8}", self.bucket)
-                if tags or not ours_by_name or not self.bucket_is_empty():
+                if not self.leftover_bucket(tags):
                     self.require_ours(f"버킷 {self.bucket}", tags)
                 self.tag_bucket()
                 created = "adopted"
@@ -317,6 +321,14 @@ class Cloud:
             action = "created"
         return {"alias": ALIAS, "version": version, "action": action}
 
+    def version_identity(self, version: str) -> dict:
+        conf = self.lam.get_function_configuration(FunctionName=self.fn, Qualifier=version)
+        env = conf.get("Environment", {}).get("Variables", {})
+        return {"region": self.region, "function": self.fn, "function_version": version,
+                "revision_id": conf.get("RevisionId"), "code_sha256": conf.get("CodeSha256"),
+                "model_uri": env.get("MODEL_URI"), "model_version": env.get("MODEL_VERSION"),
+                "model_sha256": env.get("MODEL_SHA256")}
+
     def alias_version(self) -> str | None:
         try:
             return self.lam.get_alias(FunctionName=self.fn, Name=ALIAS)["FunctionVersion"]
@@ -434,7 +446,9 @@ class Cloud:
             if not self.bucket:
                 raise ClientError({"Error": {"Code": "NoSuchBucket", "Message": "버킷 없음"}}, "HeadBucket")
             self.s3.head_bucket(Bucket=self.bucket)
-            self.require_ours(f"버킷 {self.bucket}", self.bucket_tags())
+            tags = self.bucket_tags()
+            if not self.ours(tags) and not self.leftover_bucket(tags):
+                self.require_ours(f"버킷 {self.bucket}", tags)
             for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=self.bucket):
                 objs = [{"Key": v["Key"], "VersionId": v["VersionId"]}
                         for v in page.get("Versions", []) + page.get("DeleteMarkers", [])]
@@ -518,7 +532,7 @@ def known_regions(cfg: dict, args, account: str) -> list[str]:
     regions = {resolve_region(cfg, getattr(args, "region", None))}
     regions |= {d["region"] for d in deployments() if d["account"] == account_key(account)}
     for name in ("deploy.json", "deploy_override.json"):
-        path = ROOT / "results" / "cloud" / name
+        path = RESULTS / "cloud" / name
         if path.exists():
             region = load_json(path).get("cloud", {}).get("region")
             if region:
@@ -572,13 +586,13 @@ def deploy_preflight(cfg: dict, lambda_cfg: dict) -> dict:
 
     meta = load_json(model_dir(cfg) / "metadata.json")
     pdir = ROOT / cfg["data"]["processed_dir"]
-    pkg = _load_or_empty(ROOT / "results" / "cloud" / "package.json")
+    pkg = _load_or_empty(RESULTS / "cloud" / "package.json")
     zip_path = package.ZIP_PATH
     problems = preflight_problems(
         model_meta=meta,
         model_file_sha=sha256_file(model_dir(cfg) / "model.joblib"),
-        evaluation=_load_or_empty(ROOT / "results" / "evaluation" / "metrics.json"),
-        service_check=_load_or_empty(ROOT / "results" / "service_check" / "local.json"),
+        evaluation=_load_or_empty(RESULTS / "evaluation" / "metrics.json"),
+        service_check=_load_or_empty(RESULTS / "service_check" / "local.json"),
         package_info=pkg,
         zip_sha=sha256_file(zip_path) if zip_path.exists() else None,
         app_files={arc: sha256_file(src) for arc, src in package.APP_FILES.items()},
@@ -612,11 +626,12 @@ def step_deploy(ctx) -> None:
     res["role"] = cloud.ensure_role()
     res["log_group"] = cloud.ensure_log_group(lcfg["log_retention_days"])
 
-    model_key = cloud.model_key()
+    prefix = cloud.model_prefix(meta["model_sha256"])
+    model_key = f"{prefix}/model.joblib"
     res["model_upload"] = cloud.upload(mpath, model_key, meta["model_sha256"], {"version": meta["version"]},
                                        need_version=True)
     meta_path = model_dir(cfg) / "metadata.json"
-    res["metadata_upload"] = cloud.upload(meta_path, f"models/{meta['version']}/metadata.json", sha256_file(meta_path))
+    res["metadata_upload"] = cloud.upload(meta_path, f"{prefix}/metadata.json", sha256_file(meta_path))
     code_key = f"packages/lambda-{pkg_sha[:12]}.zip"
     res["package_upload"] = cloud.upload(zip_path, code_key, pkg_sha)
 
@@ -656,16 +671,18 @@ def _cloud_invoker(ctx):
 def step_smoke(ctx) -> None:
     cloud, version, expected, invoke = _cloud_invoker(ctx)
     ctx.add_input(ROOT / "samples" / "service_cases.json")
+    identity = cloud.version_identity(version)
     report = run_cases(invoke, expected, f"lambda:{cloud.fn}:{version}", ctx.cfg, ctx.secrets)
     day = sample_day_comparison(report.pop("responses"), ctx.cfg)
     report["sample_day"] = day
     report["function_version"] = version
+    report["identity"] = identity
     write_json(ctx.out("results/service_check/cloud.json"), report)
     ctx.summary = {"passed": report["passed"], "total": report["total"], "function_version": version}
     if not report["all_passed"]:
         bad = [f"{c['name']}: {c['problems'][:1]}" for c in report["cases"] if not c["passed"]]
         raise RuntimeError(f"클라우드 서비스 검사 실패 {len(bad)}건: {bad[:3]}")
-    ctx.state["smoke_passed_version"] = version
+    ctx.state["smoke_identity"] = identity
 
 
 def step_cloud_eval(ctx) -> None:
@@ -673,8 +690,9 @@ def step_cloud_eval(ctx) -> None:
 
     cfg = ctx.cfg
     cloud, version, expected, invoke = _cloud_invoker(ctx)
+    identity = cloud.version_identity(version)
     test_path = ROOT / cfg["data"]["processed_dir"] / "test.csv"
-    local_path = ROOT / "results" / "evaluation" / "predictions_test.csv"
+    local_path = RESULTS / "evaluation" / "predictions_test.csv"
     ctx.add_input(test_path)
     ctx.add_input(local_path)
     test = pd.read_csv(test_path)
@@ -709,10 +727,10 @@ def step_cloud_eval(ctx) -> None:
     out.to_csv(ctx.out("results/cloud/predictions_cloud.csv"), index=False, lineterminator="\n")
     m = metrics(y, out.pred_cloud)
     m["daily_total_mae"] = daily_mae(test.datetime, y, out.pred_cloud)
-    local_metrics = load_json(ROOT / "results" / "evaluation" / "metrics.json")["metrics"]["model"]
+    local_metrics = load_json(RESULTS / "evaluation" / "metrics.json")["metrics"]["model"]
     report = {
         "function": cloud.fn, "function_version": version, "region": cloud.region,
-        "model": expected, "rows": int(len(test)), "batches": len(calls), "batch_size": size,
+        "identity": identity, "model": expected, "rows": int(len(test)), "batches": len(calls), "batch_size": size,
         "metrics_cloud": m,
         "metrics_local": {k: local_metrics[k] for k in ("n", "mae", "rmse", "bias", "daily_total_mae")},
         "max_abs_diff_vs_local": float(out["diff"].abs().max()),
@@ -724,34 +742,39 @@ def step_cloud_eval(ctx) -> None:
                    "max_abs_diff_vs_local": report["max_abs_diff_vs_local"], "function_version": version}
     if not report["identical_to_local"]:
         raise RuntimeError(f"클라우드 예측이 로컬과 다릅니다 (최대 차이 {report['max_abs_diff_vs_local']})")
-    ctx.state["cloud_eval_passed_version"] = version
+    ctx.state["cloud_eval_identity"] = identity
 
 
-def passed_version(ctx, key: str, path, ok) -> str | None:
+def passed_identity(ctx, key: str, path, ok) -> dict | None:
     if key in ctx.state:
         return ctx.state[key]
     if not path.exists():
         return None
     report = load_json(path)
-    return report.get("function_version") if ok(report) else None
+    return report.get("identity") if ok(report) else None
 
 
 def step_release(ctx) -> None:
     cloud = Cloud(ctx.cfg, ctx.args, ctx)
+    cloud.require_ours(f"Lambda 함수 {cloud.fn}", cloud.function_tags())
     version = ctx.state.get("deployed_version") or cloud.latest_version()
-    smoke_v = passed_version(ctx, "smoke_passed_version", ROOT / "results" / "service_check" / "cloud.json",
-                             lambda r: r.get("all_passed"))
-    eval_v = passed_version(ctx, "cloud_eval_passed_version", ROOT / "results" / "cloud" / "cloud_eval.json",
-                            lambda r: r.get("identical_to_local"))
-    if smoke_v != version or eval_v != version:
-        raise RuntimeError(f"버전 {version} 은 smoke 와 cloud-eval 을 모두 통과한 기록이 없습니다 "
-                           f"(smoke {smoke_v}, cloud-eval {eval_v})")
+    current = cloud.version_identity(version)
+    smoke = passed_identity(ctx, "smoke_identity", RESULTS / "service_check" / "cloud.json",
+                            lambda r: r.get("all_passed"))
+    evaluated = passed_identity(ctx, "cloud_eval_identity", RESULTS / "cloud" / "cloud_eval.json",
+                                lambda r: r.get("identical_to_local"))
+    missing = [name for name, seen in (("smoke", smoke), ("cloud-eval", evaluated)) if seen != current]
+    if missing:
+        raise RuntimeError(f"{cloud.region} 의 버전 {version} 은 {', '.join(missing)} 를 통과한 기록이 없습니다 "
+                           "(리전, 리비전, 코드, 모델 경로가 모두 같아야 합니다)")
     previous = cloud.alias_version()
     alias = cloud.point_alias(version)
-    report = {"released_at": now_iso(), **cloud.info(), "function_version": version,
+    report = {"released_at": now_iso(), **cloud.info(), "function_version": version, "identity": current,
               "previous_live": previous, "alias": alias}
     write_json(ctx.out("results/cloud/release.json"), report)
-    ctx.cloud = {**cloud.info(), "function_version": version, "alias": alias}
+    ctx.model = {"name": ctx.cfg["model"]["name"], "version": current["model_version"],
+                 "sha256": current["model_sha256"]}
+    ctx.cloud = {**cloud.info(), "function_version": version, "alias": alias, "model_uri": current["model_uri"]}
     ctx.summary = {"live": version, "previous_live": previous}
 
 
