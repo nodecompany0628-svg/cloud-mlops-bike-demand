@@ -249,3 +249,21 @@ def test_principal_pattern_only_touches_arns():
     uri = "s3://bike-demand-mlops-x/models/v2-user/abc123def456/model.joblib?versionId=xyz"
     assert runlog.sanitize(uri, []) == uri
     assert runlog.sanitize("arn:aws:iam::1:user/someone", []).endswith(":user/<NAME>")
+
+
+def test_sanitize_hides_escaped_non_ascii_repo_path(monkeypatch):
+    root = Path(Path.cwd().anchor) / "작업 폴더" / "repo"
+    monkeypatch.setattr(runlog, "ROOT", root)
+    raw = str(root / "models" / "model.joblib")
+    texts = [json.dumps(raw), json.dumps(json.dumps({"p": raw})), json.dumps(json.dumps({"p": raw}, ensure_ascii=False))]
+    for text in texts:
+        clean = runlog.sanitize(text, [])
+        assert "<REPO>" in clean and "\\uc791" not in clean.lower() and "작업" not in clean
+
+
+def test_run_log_with_bom_is_read(isolated):
+    runlog.RUN_LOG.parent.mkdir(parents=True)
+    line = json.dumps({"run_id": "a", "step": "s", "status": "success"})
+    runlog.RUN_LOG.write_bytes(b"\xef\xbb\xbf" + line.encode() + b"\n")
+    records, broken = runlog.read_run_log()
+    assert [r["run_id"] for r in records] == ["a"] and broken == 0

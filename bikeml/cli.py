@@ -52,6 +52,8 @@ def main(argv=None) -> int:
     p.add_argument("--profile", default=None, help="AWS 프로필 (없으면 AWS_PROFILE 환경 변수, 설정의 cloud.profile 순. 모두 없으면 BIKEML_USE_ENV_CREDENTIALS=1 일 때만 환경 변수 키 사용)")
     p.add_argument("--region", default=None, help="AWS 리전 (기본: 설정 파일의 ap-northeast-2)")
     p.add_argument("--lambda-config", default=None, help="Lambda 설정 파일 (기본: config/lambda.json)")
+    p.add_argument("--ignore-region", action="append", default=None, metavar="REGION",
+                   help="status 와 cleanup 에서 조회하지 않을 리전 (이 계정에서 쓸 수 없는 리전일 때만. 여러 번 쓸 수 있음)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("run", help="단계를 순서대로 실행 (실패하면 멈춤)")

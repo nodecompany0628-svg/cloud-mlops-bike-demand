@@ -542,6 +542,8 @@ class Cloud:
         try:
             tags = self.bucket_tags(name)
             ours = self.ours(tags) or self.leftover_bucket(tags, name)
+            if not ours and not tags and name in recorded_buckets():
+                ours = None
             n, size = 0, 0
             for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=name):
                 for v in page.get("Versions", []):
@@ -842,7 +844,7 @@ def renamed_leftovers(cfg: dict) -> tuple[list[dict], bool]:
 
 
 RENAMED = ("설정의 이름(함수, 역할, 권한 경계, 버킷 접두어)이나 태그를 바꾸기 전에 배포하고 아직 정리하지 않은 자원이 있습니다 {names}. "
-           "이전 이름의 설정으로 cleanup 을 먼저 실행하세요")
+           "이전 이름의 설정으로 cleanup 을 먼저 실행하세요(태그 값이 가려져 보이면 git 기록의 config/pipeline.json 에서 원래 값을 확인)")
 
 
 def created_buckets() -> set[str]:
@@ -1200,9 +1202,20 @@ def recorded_buckets() -> set[str]:
     return deploy_history()["buckets"]
 
 
+def ignored_regions(ctx) -> list[str]:
+    names = sorted(set(getattr(ctx.args, "ignore_region", None) or []))
+    bad = [r for r in names if not re.fullmatch(r"[a-z]{2}(?:-[a-z]+)+-\d+", r)]
+    if bad:
+        raise RuntimeError(f"--ignore-region 에 리전 이름이 아닌 값이 있습니다: {bad}")
+    if resolve_region(ctx.cfg, getattr(ctx.args, "region", None)) in names:
+        raise RuntimeError("지금 리전은 --ignore-region 으로 뺄 수 없습니다")
+    return names
+
+
 def _clouds(ctx) -> tuple[list[Cloud], list[dict]]:
     from botocore.exceptions import ClientError
 
+    ignored = set(ignored_regions(ctx))
     first = Cloud(ctx.cfg, ctx.args, ctx)
     owned = set(first.all_bucket_names())
     extra, unreachable = {}, []
@@ -1224,7 +1237,7 @@ def _clouds(ctx) -> tuple[list[Cloud], list[dict]]:
     own |= {d["region"] for d in deployments() if d["account"] == account_key(first.account)}
     if first.configured_region:
         own.add(first.configured_region)
-    regions = set(known_regions(ctx.cfg, ctx.args, first.account)) | own
+    regions = (set(known_regions(ctx.cfg, ctx.args, first.account)) | own) - ignored
     clouds = [first]
     for r in sorted(regions - {first.region}):
         try:
@@ -1269,7 +1282,8 @@ def step_status(ctx) -> None:
                                                           "interrupted": f"{type(e).__name__}: {e}"})
         raise
     st = {"checked_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
-          "regions_unreachable": unreachable, "run_log_unreadable_lines": broken, "renamed_leftovers": renamed,
+          "regions_unreachable": unreachable, "regions_ignored": ignored_regions(ctx),
+          "run_log_unreadable_lines": broken, "renamed_leftovers": renamed,
           "other_account_regions": other_account_regions(clouds[0].account), "resources": resources,
           "not_ours": not_ours(resources), "permissions_boundary": boundary}
     write_json(ctx.out(f"results/cloud/{name}.json"), st)
@@ -1349,6 +1363,7 @@ def step_cleanup(ctx) -> None:
                                                            "actions": deleted, "all_gone": False})
         ctx.summary = {"all_gone": False, "actions": {d["resource"]: d["result"] for d in deleted}}
         raise
+    report["regions_ignored"] = ignored_regions(ctx)
     after, errors, others = report["after"], report["errors"], report["other_account_regions"]
     own_unreachable = [u.get("bucket") or u["region"] for u in unreachable if u["blocking"]]
     gone = report["buckets_gone"]

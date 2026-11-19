@@ -59,11 +59,12 @@ def env_info() -> dict:
 
 
 def _escaped(text: str) -> list[str]:
-    out = []
-    for ascii_only in (False, True):
-        once = json.dumps(text, ensure_ascii=ascii_only)[1:-1]
-        out += [json.dumps(once, ensure_ascii=ascii_only)[1:-1], once]
-    return out + [text]
+    out = [text]
+    for inner in (False, True):
+        once = json.dumps(text, ensure_ascii=inner)[1:-1]
+        out.append(once)
+        out += [json.dumps(once, ensure_ascii=outer)[1:-1] for outer in (False, True)]
+    return out
 
 
 def _path_variants(path: Path) -> list[str]:
@@ -315,7 +316,10 @@ def read_run_log() -> tuple[list[dict], int]:
     if not RUN_LOG.exists():
         return [], 0
     records, broken = [], 0
-    for raw in RUN_LOG.read_bytes().splitlines():
+    data = RUN_LOG.read_bytes()
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
+    for raw in data.splitlines():
         if not raw.strip():
             continue
         try:

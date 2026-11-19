@@ -33,7 +33,7 @@ pytestmark = pytest.mark.skipif(not all(p.exists() for p in NEEDED),
 
 def make_args(**kw):
     base = dict(config=str(DEFAULT_CONFIG), profile=None, region=None, lambda_config=None,
-                model_uri_override=None, status_name=None, cmd="run", steps=[])
+                model_uri_override=None, status_name=None, ignore_region=None, cmd="run", steps=[])
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -1251,3 +1251,46 @@ def test_ctrl_c_during_cleanup_still_writes_result(sandbox, monkeypatch):
         rc = run(["cleanup"])
     clean = failed_result(sandbox, records(sandbox)[-1], "results/cloud/cleanup.json")
     assert rc == 130 and clean["interrupted"].startswith("KeyboardInterrupt") and clean["actions"]
+
+
+def test_unreachable_region_from_run_log_can_be_ignored_explicitly(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    write_deploy_record({"region": "me-central-1", "bucket": None})
+    real_init = cloud.Cloud.__init__
+
+    def init(self, cfg, args, ctx=None, region=None):
+        if region == "me-central-1":
+            raise ClientError({"Error": {"Code": "InvalidClientTokenId", "Message": "token"}}, "GetCallerIdentity")
+        real_init(self, cfg, args, ctx, region)
+    with mock_aws():
+        monkeypatch.setattr(cloud.Cloud, "__init__", init)
+        rc_status = run(["status"])
+        rc_clean = run(["cleanup"])
+        rc_status_ignored = run(["status"], ignore_region=["me-central-1"])
+        rc_clean_ignored = run(["cleanup"], ignore_region=["me-central-1"])
+        rc_after = run(["status"])
+    status = read(sandbox, "results/cloud/status.json")
+    assert rc_status == 1 and rc_clean == 1 and rc_status_ignored == 0 and rc_clean_ignored == 0
+    assert read(sandbox, "results/cloud/cleanup.json")["regions_ignored"] == ["me-central-1"]
+    assert rc_after == 0 and status["regions_ignored"] == [] and cloud.deploy_history()["pending"] == {}
+
+
+def test_ignore_region_rejects_current_region_and_bad_values(sandbox):
+    with mock_aws():
+        rc_current = run(["status"], ignore_region=["ap-northeast-2"])
+        rc_bad = run(["status"], ignore_region=["../x"])
+    recs = records(sandbox)
+    assert rc_current == 1 and rc_bad == 1 and "--ignore-region" in recs[0]["error"] and "--ignore-region" in recs[1]["error"]
+
+
+def test_recorded_bucket_that_lost_its_tags_is_not_dropped(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        s3 = boto3.client("s3", region_name="ap-northeast-2")
+        name = s3.list_buckets()["Buckets"][0]["Name"]
+        s3.delete_bucket_tagging(Bucket=name)
+        rc = run(["cleanup"])
+        left = [b["Name"] for b in s3.list_buckets()["Buckets"]]
+    clean = failed_result(sandbox, records(sandbox)[-1], "results/cloud/cleanup.json")
+    assert rc == 1 and left == [name] and clean["all_gone"] is False

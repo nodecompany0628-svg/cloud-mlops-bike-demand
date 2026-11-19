@@ -81,7 +81,7 @@
 | 기준 방법 MAE | 시간대 평균 94.78, 전체 평균 170.51 대/시간. 시간대 평균보다 49.9% 낮아 합격 | 같은 파일 |
 | 서비스 검사 (로컬 핸들러) | 12/12 통과 | [results/service_check/local.json](results/service_check/local.json) |
 | 실패 처리 예시 | 합격 기준을 90%로 올린 설정에서 evaluate 실패, check-local 건너뜀, 정상 결과는 그대로 | [results/failed/](results/failed/), [runs/run_log.jsonl](runs/run_log.jsonl) |
-| 테스트 | 160개 통과 | `python -m pytest -q` |
+| 테스트 | 165개 통과 (새로 받은 폴더에서 `run package` 전에는 zip이 필요한 1개를 건너뛴다) | `python -m pytest -q` |
 | Lambda 패키지 | zip 64.29MB, 압축 해제 198.94MB (한도 250MB) | [results/cloud/package.json](results/cloud/package.json) |
 | 실제 AWS 실행 | 실행 전 | [docs/cloud.md](docs/cloud.md) |
 
@@ -142,7 +142,7 @@ python -m bikeml --profile mlops cleanup
 python -m bikeml runs
 ```
 
-- 전체 옵션 `--config`, `--profile`, `--region`, `--lambda-config`는 `run`, `status`, `cleanup`, `runs` 앞에 쓴다.
+- 전체 옵션 `--config`, `--profile`, `--region`, `--lambda-config`, `--ignore-region`은 `run`, `status`, `cleanup`, `runs` 앞에 쓴다. `--ignore-region`은 이 계정에서 쓸 수 없는 리전 때문에 `status`, `cleanup`이 계속 실패할 때만 쓴다([docs/cloud.md](docs/cloud.md) 2절).
 - `status`, `cleanup`은 지금 리전 하나만 보지 않고, 상태 파일, 실행 기록, 배포 기록, 버킷 이름에서 찾은 모든 리전과 기록에 남은 버킷까지 조회하고 정리한다. 자세한 규칙은 [docs/cloud.md](docs/cloud.md) 2절에 있다.
 - 단계 하나씩도 실행할 수 있다: `python -m bikeml run evaluate`, `python -m bikeml --profile mlops run deploy smoke`
 - 한 단계가 실패하면 뒤 단계는 실행하지 않고, 실패한 결과는 `results/failed/<run_id>_<단계>/`에 따로 남는다. 실행 중 Ctrl+C로 멈춰도 그 단계는 실패로 기록된다.
