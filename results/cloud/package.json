@@ -1,11 +1,12 @@
 {
   "zip": "build/lambda_package.zip",
-  "zip_sha256": "8f0d676d7a4d12f19e9f8a5f5ee59ad1b4b7bd357d9169a604f49b43eed7cb9a",
-  "zip_mb": 53.14,
-  "unzipped_mb": 169.15,
+  "zip_sha256": "4a884fd4ee79adb7146a8a13f315a539891d999a47b720fe52eb1fdcac52e50e",
+  "zip_mb": 64.29,
+  "unzipped_mb": 198.94,
   "removed_test_dirs_mb": 30.06,
-  "file_count": 2136,
+  "file_count": 3516,
   "runtime": "python3.12",
+  "precompiled_pyc": true,
   "platforms": [
     "manylinux_2_28_x86_64",
     "manylinux_2_17_x86_64",
@@ -21,10 +22,10 @@
     "threadpoolctl-3.8.0.dist-info"
   ],
   "app_files": {
-    "lambda_function.py": "e21e17db21de4d8432409ba9da1cd6e1c2a91b9db92e1af4a1a910fb5153dc9d",
+    "lambda_function.py": "c51d997a3c947bcfab5576474bc9b3a2bc38c7452c192c64fa2184eed1ec1ed8",
     "bikeml/__init__.py": "27e8febb48ada44153ea2add9969a2c50a9831a74d9755fdd53c549a888b1cc2",
     "bikeml/features.py": "145013ee8e1cc9cb38a4f6071d896fcd9a652dab011d2072f41d96d8b7d0bc51",
-    "bikeml/service.py": "39403ae2522bc9298526badf1a0703d6d122ca38d815d3273ff63a6e02af9ffc"
+    "bikeml/service.py": "bb1e261b7f1ea5b3dc0ff15cb26e20a7e7fa2a807bfea5ef42cf386c1584305b"
   },
   "requirements_sha256": "5dfbd706e79729311effc37a552365d5c704375829e10bacc8868da33fee3fc5"
 }

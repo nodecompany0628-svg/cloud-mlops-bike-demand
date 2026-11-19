@@ -15,9 +15,11 @@
 
 `python -m bikeml run prepare`가 원자료로 만든 파생 자료다. 원자료에서 바꾼 점은 다음과 같다.
 
-- 기온, 체감 기온, 습도, 풍속을 정규화 값에서 실제 단위(°C, %, km/h)로 되돌림
+- dteday와 hr을 합쳐 `datetime`(`YYYY-MM-DDTHH:00`) 한 열로 만듦
+- weathersit을 `weather`로, holiday를 true/false로 바꿈
+- 기온, 체감 기온, 습도, 풍속을 정규화 값에서 실제 단위(°C, %, km/h)로 되돌려 `temp_c`, `feels_like_c`, `humidity`, `windspeed_kmh`로 둠
 - 습도 0% 22행(2011-03-10)을 결측으로 바꿈
-- casual, registered, instant, season 열을 뺌
+- instant, season, yr, mnth, weekday, workingday, casual, registered 열을 뺌. yr, mnth, weekday, workingday는 `datetime`과 `holiday`에서 다시 계산할 수 있다
 - 2012-08-31까지를 `train.csv`, 2012-09-01부터를 `test.csv`로 나눔
 
 자세한 기준은 [docs/data_and_model.md](../docs/data_and_model.md)에 있다. 가공한 자료도 CC BY 4.0 조건을 따른다.

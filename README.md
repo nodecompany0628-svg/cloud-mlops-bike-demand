@@ -1,10 +1,11 @@
 # 날씨로 자전거 시간당 대여량 예측
 
-클라우드 MLOps 대체 실습과제. 공공 자전거 운영 담당자가 다음 날의 날씨 예보를 넣으면 시간대별 대여 건수를 돌려주는 예측 서비스다. 공개 데이터로 모델을 직접 학습했고 AWS Lambda에서 실행한다. 데이터 준비, 학습, 평가, 배포, 검사, 정리를 명령 하나로 순서대로 실행하고 단계마다 기록을 남긴다.
+클라우드 MLOps 대체 실습과제. 공공 자전거 운영 담당자가 다음 날의 날씨 예보를 넣으면 시간대별 대여 건수를 돌려주는 예측 서비스다. 공개 데이터로 모델을 직접 학습했고 AWS Lambda에서 실행한다. 데이터 준비부터 학습, 평가, 배포, 검사까지는 `run` 명령으로 단계를 순서대로 실행하고, 자원 정리는 `cleanup` 명령으로 한다. 단계마다 실행 기록을 남긴다.
 
 진행 상태 (2026-11-19)
 
-- 실행함: 데이터 받기와 점검, 분할, 학습, 평가, 로컬 서비스 검사, 테스트, Lambda 배포 패키지 빌드, 모의 AWS(moto)에서 배포부터 정리까지 전 과정
+- 실행함: 데이터 받기와 점검, 분할, 학습, 평가, 로컬 서비스 검사, 테스트, Lambda 배포 패키지 빌드, 실패 처리 예시(엄격한 합격 기준으로 평가 실패)
+- 모의 AWS(moto)로만 확인함: 자원 생성과 배포, 버전 게시, 상태 조회, 정리 흐름. 이 테스트에서는 배포 전 확인을 대체하고, 작은 가짜 zip을 올리고, Lambda 호출을 로컬 핸들러로 대신한다.
 - 실행 전: 실제 AWS 배포와 클라우드 검사·평가, 클라우드 오류 재현과 복구, 새 폴더 재실행(클라우드 포함), 자원 정리. AWS 계정이 준비되면 실행하고 이 문서와 [docs/cloud.md](docs/cloud.md), [docs/operations.md](docs/operations.md)를 채운다.
 
 ## 1. 서비스
@@ -41,6 +42,7 @@
 ```
 python -m bikeml run local   fetch, prepare, train, evaluate, check-local
 python -m bikeml run cloud   package, deploy, smoke, cloud-eval
+python -m bikeml run all     local 과 cloud 를 이어서 실행
 python -m bikeml status      AWS 자원 상태 조회
 python -m bikeml cleanup     AWS 자원 삭제 후 다시 조회
 ```
@@ -53,7 +55,7 @@ python -m bikeml cleanup     AWS 자원 삭제 후 다시 조회
 | evaluate | 기준 방법과 비교, 합격 기준 확인 (불합격이면 멈춤) |
 | check-local | 서비스 검사 사례 12개를 Lambda 핸들러에 로컬로 보냄 |
 | package | 리눅스용 라이브러리로 Lambda zip 빌드 |
-| deploy | 평가·검사·패키지가 현재 모델과 코드 기준인지 확인한 뒤 S3, IAM 역할, 로그 그룹, Lambda 함수를 만들고 버전 게시 |
+| deploy | 평가와 검사가 현재 모델, 기준, 코드로 통과했는지와 zip이 현재 코드로 만든 것인지 확인한 뒤 S3, IAM 역할, 로그 그룹, Lambda 함수를 만들고 버전 게시 |
 | smoke | 같은 검사 사례 12개를 Lambda에 보냄 |
 | cloud-eval | 평가 자료 2,888건을 Lambda로 예측해 로컬 결과와 비교 |
 
@@ -61,7 +63,7 @@ python -m bikeml cleanup     AWS 자원 삭제 후 다시 조회
 |---|---|
 | [bikeml/](bikeml/) | 파이프라인 코드. `features.py`, `service.py`는 Lambda에도 들어간다 |
 | [lambda_src/lambda_function.py](lambda_src/lambda_function.py) | Lambda 진입점. S3에서 모델을 받아 sha256과 입력 개수를 확인한 뒤 예측 |
-| [config/](config/) | 파이프라인 설정, Lambda 설정 |
+| [config/](config/) | 파이프라인 설정, Lambda 설정, 실패 예시용 설정(`demo_strict_criteria.json`) |
 | [data/](data/) | 원자료(`raw/`), 정리·분할한 자료(`processed/`), 출처 표기([data/README.md](data/README.md)) |
 | [models/hgb-v1/](models/hgb-v1/) | 학습한 모델과 메타데이터 |
 | [samples/](samples/) | 서비스 검사 사례, 예시 요청 |
@@ -77,8 +79,9 @@ python -m bikeml cleanup     AWS 자원 삭제 후 다시 조회
 | 모델 MAE (평가 2012-09~12, 2,888시간) | 47.53 대/시간 (RMSE 72.95) | [results/evaluation/metrics.json](results/evaluation/metrics.json) |
 | 기준 방법 MAE | 시간대 평균 94.78, 전체 평균 170.51 대/시간. 시간대 평균보다 49.9% 낮아 합격 | 같은 파일 |
 | 서비스 검사 (로컬 핸들러) | 12/12 통과 | [results/service_check/local.json](results/service_check/local.json) |
-| 테스트 | 53개 통과 (모의 AWS 배포·검사·평가·정리 포함) | `python -m pytest -q` |
-| Lambda 패키지 | zip 53.14MB, 압축 해제 169.15MB (한도 250MB) | [results/cloud/package.json](results/cloud/package.json) |
+| 실패 처리 예시 | 합격 기준을 90%로 올린 설정에서 evaluate 실패, check-local 건너뜀, 정상 결과는 그대로 | [results/failed/](results/failed/), [runs/run_log.jsonl](runs/run_log.jsonl) |
+| 테스트 | 59개 통과 | `python -m pytest -q` |
+| Lambda 패키지 | zip 64.29MB, 압축 해제 198.94MB (한도 250MB) | [results/cloud/package.json](results/cloud/package.json) |
 | 실제 AWS 실행 | 실행 전 | [docs/cloud.md](docs/cloud.md) |
 
 ## 4. 필요한 환경과 권한
@@ -87,7 +90,7 @@ python -m bikeml cleanup     AWS 자원 삭제 후 다시 조회
 - 확인한 환경: Windows 11, Python 3.12.13, pip 26.3, uv 0.11.16
 - 라이브러리 버전: [requirements.txt](requirements.txt)(파이프라인), [requirements-dev.txt](requirements-dev.txt)(테스트: pytest, moto), [requirements-lambda.txt](requirements-lambda.txt)(Lambda 패키지). requirements.txt와 requirements-lambda.txt의 scikit-learn, numpy 버전이 같아야 저장한 모델을 Lambda에서 불러올 수 있다.
 - 클라우드 단계: AWS 자격 증명을 로컬 프로필로 등록하고 [docs/iam/operator-policy.json](docs/iam/operator-policy.json) 범위의 권한을 준다. AWS CLI는 없어도 된다(boto3 사용).
-- 프로필을 지정하지 않으면 클라우드 단계는 AWS에 접속하기 전에 멈춘다. 기본 자격 증명으로 다른 계정에 배포하는 일을 막기 위해서다.
+- 프로필을 지정하지 않으면 클라우드 단계는 AWS에 접속하기 전에 멈춘다. 기본 자격 증명으로 다른 계정에 배포하는 일을 막기 위해서다. 환경 변수의 키(`AWS_ACCESS_KEY_ID` 등)를 쓰려면 `BIKEML_USE_ENV_CREDENTIALS=1`도 함께 지정해야 한다.
 - 로컬 단계와 테스트는 AWS 없이 실행된다.
 
 ## 5. 자원 준비와 설정
@@ -99,21 +102,34 @@ python -m bikeml cleanup     AWS 자원 삭제 후 다시 조회
 
 ## 6. 설치
 
+Windows (PowerShell)
+
+```powershell
+git clone https://github.com/nodecompany0628-svg/cloud-mlops-bike-demand.git
+cd cloud-mlops-bike-demand
+uv venv --python 3.12 --seed .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m pip install -r requirements-dev.txt
+```
+
+macOS, Linux
+
 ```bash
 git clone https://github.com/nodecompany0628-svg/cloud-mlops-bike-demand.git
 cd cloud-mlops-bike-demand
-
-uv venv --python 3.12 --seed .venv        # 또는 python3.12 -m venv .venv
-.venv\Scripts\activate                    # macOS/Linux: source .venv/bin/activate
+uv venv --python 3.12 --seed .venv
+source .venv/bin/activate
 python -m pip install -r requirements.txt
 python -m pip install -r requirements-dev.txt
 ```
+
+uv 대신 Python 3.12의 `python -m venv .venv`를 써도 된다. 아래 명령의 `python`은 가상환경의 python이다. Windows에서 가상환경을 활성화하지 않았다면 `.venv\Scripts\python`으로 바꿔 쓴다.
 
 Windows에서는 저장소 경로가 길면(약 110자 이상) 경로 길이 제한 때문에 moto 설치가 실패한다. 짧은 경로(예: `C:\work`)에 받거나 Windows 긴 경로 지원을 켠다. moto가 없으면 모의 AWS 테스트는 건너뛰고 나머지 테스트와 파이프라인은 그대로 동작한다.
 
 ## 7. 실행과 검증
 
-```bash
+```
 python -m bikeml run local
 python -m pytest -q
 
@@ -124,17 +140,16 @@ python -m bikeml --profile mlops cleanup
 python -m bikeml runs
 ```
 
-- `--profile`, `--region`, `--lambda-config`는 `run`, `status`, `cleanup` 앞에 쓴다.
+- 전체 옵션 `--config`, `--profile`, `--region`, `--lambda-config`는 `run`, `status`, `cleanup`, `runs` 앞에 쓴다.
 - 단계 하나씩도 실행할 수 있다: `python -m bikeml run evaluate`, `python -m bikeml --profile mlops run deploy smoke`
-- 한 단계가 실패하면 뒤 단계는 실행하지 않고, 실패한 결과는 `results/failed/<run_id>_<단계>/`에 따로 남는다.
-- `deploy`는 현재 모델로 `evaluate`와 `check-local`을 통과한 기록이 있고, zip이 현재 코드로 만든 것일 때만 진행한다.
+- 한 단계가 실패하면 뒤 단계는 실행하지 않고, 실패한 결과는 `results/failed/<run_id>_<단계>/`에 따로 남는다. 실행 중 Ctrl+C로 멈춰도 그 단계는 실패로 기록된다.
+- 실패 처리 예시 재현: `python -m bikeml --config config/demo_strict_criteria.json run evaluate check-local`
+- `deploy`는 현재 모델과 합격 기준, 평가 자료로 `evaluate`를 통과했고, 현재 Lambda 코드로 `check-local`을 통과했으며, zip이 현재 코드로 만든 것일 때만 진행한다.
 
 AWS CLI로 직접 호출하는 방법
 
-```bash
-aws lambda invoke --function-name bike-demand-predict --region ap-northeast-2 --profile mlops \
-  --cli-binary-format raw-in-base64-out \
-  --payload file://samples/generated/request_2012-12-03.json out.json
+```
+aws lambda invoke --function-name bike-demand-predict --region ap-northeast-2 --profile mlops --cli-binary-format raw-in-base64-out --payload file://samples/generated/request_2012-12-03.json out.json
 ```
 
 ## 8. 결과 파일 위치
@@ -142,12 +157,16 @@ aws lambda invoke --function-name bike-demand-predict --region ap-northeast-2 --
 | 파일 | 내용 |
 |---|---|
 | `results/data/prepare_report.json` | 원자료 점검, 결측 처리, 단위 변환, 분할 요약 |
-| `results/evaluation/metrics.json` | 모델과 기준 방법의 지표, 월별 지표, 합격 판정 |
+| `results/evaluation/metrics.json` | 모델과 기준 방법의 지표, 월별 지표, 합격 기준과 판정, 평가 자료 sha256 |
 | `results/evaluation/predictions_test.csv` | 평가 자료 전체의 실제값과 예측값 |
 | `results/evaluation/worst_errors.csv`, `worst_case_context.csv` | 큰 오류 15건, 최대 오류의 앞뒤 7일 |
 | `results/evaluation/daily_totals.csv` | 일별 합계 비교 |
-| `results/service_check/local.json`, `cloud.json` | 서비스 검사 결과 (로컬, Lambda) |
-| `results/cloud/package.json`, `deploy.json`, `cloud_eval.json`, `predictions_cloud.csv`, `status*.json`, `cleanup.json` | 패키지, 배포, 클라우드 평가, 자원 상태, 정리 |
+| `results/service_check/local.json`, `cloud.json` | 서비스 검사 결과 (로컬, Lambda), 실행 환경 버전 |
+| `results/cloud/package.json` | 패키지 해시, 크기, 들어간 라이브러리와 코드 해시 |
+| `results/cloud/deploy.json`, `deploy_override.json` | 정상 배포 기록, 오류 재현용 배포 기록 |
+| `results/cloud/cloud_eval.json`, `predictions_cloud.csv` | 클라우드 평가 |
+| `results/cloud/status*.json`, `cleanup.json` | 자원 상태, 정리 |
+| `results/failed/<run_id>_<단계>/` | 실패한 단계의 결과와 `error.txt` |
 | `runs/run_log.jsonl` | 단계별 실행 기록 (시각, 성공 여부, 커밋, 모델 버전, 입력·설정 해시, 결과 위치) |
 
 ## 9. 문서
@@ -156,7 +175,7 @@ aws lambda invoke --function-name bike-demand-predict --region ap-northeast-2 --
 |---|---|
 | [docs/data_and_model.md](docs/data_and_model.md) | 데이터 출처와 사용 조건, 한 건의 의미, 단위, 잘못된 값 처리, 분할 기준, 모델과 버전 |
 | [docs/evaluation.md](docs/evaluation.md) | 평가 기준, 결과, 정상 동작 검사, 오류 사례 분석, 한계 |
-| [docs/cloud.md](docs/cloud.md) | 클라우드 구성과 선택 이유, 설정, 실행 기록 형식, 오류 재현과 복구 |
+| [docs/cloud.md](docs/cloud.md) | 클라우드 구성과 선택 이유, 설정, 실행 기록과 실패 처리, 오류 재현과 복구 |
 | [docs/operations.md](docs/operations.md) | 새 폴더 재실행, 권한, 비용, 자원 정리 |
 
 ## 10. 참고 자료와 구현 범위
@@ -165,8 +184,15 @@ aws lambda invoke --function-name bike-demand-predict --region ap-northeast-2 --
 
 - Fanaee-T, H. (2013). Bike Sharing [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C5W894 (CC BY 4.0)
 - Fanaee-T, H., Gama, J. (2014). Event labeling combining ensemble detectors and background knowledge. Progress in Artificial Intelligence, 2(2-3), 113-127. https://doi.org/10.1007/s13748-013-0040-3
-- scikit-learn 문서: HistGradientBoostingRegressor
-- AWS 문서: Lambda 할당량과 .zip 배포 패키지, Lambda 실행 역할, S3 버전 관리와 수명 주기, CloudWatch Logs 보관 기간
+- scikit-learn, HistGradientBoostingRegressor: https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.HistGradientBoostingRegressor.html
+- AWS Lambda 할당량: https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-limits.html
+- AWS Lambda 런타임: https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html
+- AWS Lambda 예약 동시성: https://docs.aws.amazon.com/lambda/latest/dg/configuration-concurrency.html
+- Amazon S3 수명 주기 규칙: https://docs.aws.amazon.com/AmazonS3/latest/userguide/intro-lifecycle-rules.html
+- Amazon S3 HeadObject (권한에 따른 403, 404): https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html
+- AWS Lambda 가격: https://aws.amazon.com/lambda/pricing/
+
+데이터와 그 데이터로 학습한 모델은 CC BY 4.0의 출처 표기 조건을 따른다([data/README.md](data/README.md)).
 
 이 저장소에서 구현한 부분
 
