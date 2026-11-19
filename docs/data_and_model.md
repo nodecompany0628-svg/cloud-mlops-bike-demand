@@ -91,9 +91,9 @@
 | 알고리즘 | scikit-learn `HistGradientBoostingRegressor` (그래디언트 부스팅 트리) |
 | 손실 | 포아송. 대여 건수는 0 이상의 셈 값이라 이 손실을 쓰고, 예측도 0 이상이 된다 |
 | 하이퍼파라미터 | learning_rate 0.05, max_iter 500, max_leaf_nodes 31, min_samples_leaf 20, early_stopping 끔, random_state 42 |
-| 버전 이름 | `hgb-v1` ([models/hgb-v1/](../models/hgb-v1/)). `train`은 후보 모델을 `models/_candidate/hgb-v1/`(Git 제외)에 만들고, `evaluate`가 합격 기준을 통과시킨 경우에만 `models/hgb-v1/`로 복사한다. 그래서 평가에 떨어진 모델이 합격한 모델을 덮지 않는다. `evaluate`는 평가할 모델의 학습 자료 sha256, 하이퍼파라미터, 버전이 지금 설정과 같은지 먼저 확인하고, 다르면 멈춘다(분할 기간만 바꾸고 다시 학습하지 않은 경우 등) |
+| 버전 이름 | `hgb-v1` ([models/hgb-v1/](../models/hgb-v1/)). `train`은 후보 모델을 `models/_candidate/hgb-v1/`(Git 제외)에 만들고, `evaluate`가 합격 기준을 통과시킨 경우에만 `models/hgb-v1/`로 복사한다. 그래서 평가에 떨어진 모델이 합격한 모델을 덮지 않는다. `evaluate`는 먼저 정리한 자료가 설정의 분할 기간과 맞는지 보고(다르면 `prepare`를 다시 하라고 멈춘다), 평가할 모델의 학습 자료 sha256, 하이퍼파라미터, 버전, 특성 목록과 특성 코드(`bikeml/features.py`) sha256이 지금과 같은지 확인한다. 후보 모델이 맞지 않으면 반영된 모델을 보고, 둘 다 맞지 않으면 `train`을 다시 하라고 멈춘다 |
 | 파일 | `model.joblib` (joblib 압축 3, 0.7MB), sha256 `9911f56a01c312600ac0ce5101e811299274debd19ad6d077f2e6b8e090d47dd` |
-| 메타데이터 | [models/hgb-v1/metadata.json](../models/hgb-v1/metadata.json): 학습 자료 sha256과 기간, 라이브러리 버전, 학습 시간, 학습 MAE(17.66) |
+| 메타데이터 | [models/hgb-v1/metadata.json](../models/hgb-v1/metadata.json): 학습 자료 sha256과 기간, 특성 목록과 특성 코드 sha256, 라이브러리 버전, 학습 시간, 학습 MAE(17.66) |
 | 재현성 | 같은 자료와 설정으로 여러 번 학습해도 sha256이 같았다. `runs/run_log.jsonl`의 train 단계 기록이 모두 `9911f56a...`이다 |
 
 early_stopping을 끈 이유: 기본값 'auto'는 학습 자료가 10,000행을 넘으면 학습 자료의 일부를 무작위로 떼어 조기 종료에 쓴다. 학습 자료 14,491행에서는 이 동작이 켜지므로, 결과를 고정하려고 명시적으로 껐다.

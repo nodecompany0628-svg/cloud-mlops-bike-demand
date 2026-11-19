@@ -36,7 +36,7 @@
         }
       ],
       "meta": {
-        "client_ms": 64.8
+        "client_ms": 93.7
       }
     },
     {
@@ -69,7 +69,7 @@
         }
       ],
       "meta": {
-        "client_ms": 5.0
+        "client_ms": 5.9
       }
     },
     {
@@ -96,7 +96,7 @@
         }
       ],
       "meta": {
-        "client_ms": 4.4
+        "client_ms": 7.9
       }
     },
     {
@@ -122,7 +122,7 @@
         }
       ],
       "meta": {
-        "client_ms": 4.4
+        "client_ms": 4.0
       }
     },
     {

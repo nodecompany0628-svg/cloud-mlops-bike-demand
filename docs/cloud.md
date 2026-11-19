@@ -9,7 +9,7 @@
 | 자원 | 이름 | 내용 |
 |---|---|---|
 | S3 버킷 | `bike-demand-mlops-ap-northeast-2-<임의 8자리>` | 비공개, 버전 관리. `models/hgb-v1/model.joblib`, `metadata.json`, `packages/lambda-<sha 12자리>.zip` |
-| Lambda 함수 | `bike-demand-predict` | python3.12, x86_64, 1024MB, 30초. 검사를 통과한 버전에 `live` 별칭 |
+| Lambda 함수 | `bike-demand-predict` | python3.12, x86_64, 1024MB, 30초. smoke와 cloud-eval을 통과한 버전에 `live` 별칭 |
 | IAM 역할 | `bike-demand-predict-role` | Lambda 실행 역할 |
 | 로그 그룹 | `/aws/lambda/bike-demand-predict` | 7일 보관 |
 
@@ -18,15 +18,16 @@
 1. `package`: 운영 담당자 PC에서 리눅스용 라이브러리로 zip(64MB)을 만든다.
 2. `deploy`: 배포 전 확인을 한 뒤 버킷, 역할, 로그 그룹을 준비하고 모델과 zip을 S3에 올린다. 함수를 만들거나 갱신하고 새 버전을 게시한다.
 3. Lambda는 콜드 스타트 때 S3에서 고정된 객체 버전의 모델을 한 번 받아 sha256과 입력 개수를 확인하고, 이후 요청은 메모리의 모델로 예측한다.
-4. `smoke`: 검사 사례 12개를 같은 실행에서 `deploy`가 게시한 버전에 보낸다(`smoke`만 따로 실행하면 가장 최근에 게시된 버전). 모두 통과하면 그 버전에 `live` 별칭을 붙인다.
-5. `cloud-eval`: 평가 자료 2,888건을 500건씩 보내 예측을 받고 로컬 결과와 비교한다.
-6. 응답과 기록은 PC의 `results/`, `runs/`에 남기고 Git에 올린다. 함수 로그는 CloudWatch Logs에 남는다.
+4. `smoke`: 검사 사례 12개를 같은 실행에서 `deploy`가 게시한 버전에 보낸다(`smoke`만 따로 실행하면 가장 최근에 게시된 버전).
+5. `cloud-eval`: 평가 자료 2,888건을 같은 버전에 500건씩 보내 예측을 받고 로컬 결과와 비교한다.
+6. `release`: 그 버전이 smoke와 cloud-eval을 모두 통과했을 때만 `live` 별칭을 그 버전으로 옮긴다. 이전에 `live`가 가리키던 버전도 기록한다.
+7. 응답과 기록은 PC의 `results/`, `runs/`에 남기고 Git에 올린다. 함수 로그는 CloudWatch Logs에 남는다.
 
 | 선택 | 이유 |
 |---|---|
 | AWS Lambda | 운영 담당자가 하루 한두 번 다음 날 24시간 예보를 넣어 호출하는 용도다. 상시 서버나 화면이 필요 없고, 호출할 때만 실행되어 요청이 없으면 비용이 없다. 모델이 0.7MB로 작아 함수 하나로 충분하다. Lambda에서의 실제 처리 시간과 메모리 사용량은 배포 후 REPORT 로그로 기록한다 |
 | 직접 호출 (`lambda:InvokeFunction`), 공개 주소 없음 | 사용자가 담당자 몇 명뿐이라 공개 HTTP 주소를 열 이유가 없다. IAM 권한이 있는 사람만 호출할 수 있어 인증을 따로 만들지 않았다 |
-| `live` 별칭 | 사용자는 `live`로 호출한다. `live`는 검사를 통과한 버전만 가리키므로, 배포 도중 실패해 `$LATEST`가 어중간한 상태가 되어도 사용자 호출에는 영향이 없다 |
+| `live` 별칭 | 사용자는 `live`로 호출한다. `live`는 smoke와 cloud-eval을 모두 통과한 버전만 가리키므로, 배포나 검사 도중 실패해 `$LATEST`나 새 버전이 어중간한 상태여도 사용자 호출에는 영향이 없다 |
 | 모델은 S3에 두고 실행할 때 내려받음 | 모델 버전을 코드 패키지와 따로 관리한다. 버킷 버전 관리를 켜고, Lambda 환경 변수 `MODEL_URI`에 S3 객체 버전 ID까지 적는다(`...model.joblib?versionId=...`). 그래서 같은 이름의 모델을 다시 올려도 이미 게시한 Lambda 버전은 자기 모델 파일을 그대로 가리킨다. 이전 객체 버전은 수명 주기 규칙에 따라 30일 동안 남으므로, 그 기간 안에는 이전 Lambda 버전으로 되돌릴 수 있다 |
 | 같은 파일은 다시 올리지 않음 | 업로드 전에 S3의 현재 객체에 적힌 sha256을 보고, 같으면 그 객체 버전을 그대로 쓴다. 함수 설정의 설명은 고정 문구이고 커밋 정보는 버전 설명에만 넣는다. 그래서 모델, 코드, 설정이 그대로면 Lambda 설정도 그대로이고, AWS가 새 버전 번호를 만들지 않고 기존 번호를 돌려준다 |
 | 버전 관리 반영 대기 | AWS 문서는 버킷에서 버전 관리를 처음 켠 뒤 반영에 최대 15분이 걸릴 수 있다고 한다. 업로드 결과에 객체 버전이 없거나 그 버전을 읽지 못하면 30초 간격으로 최대 30번(15분) 다시 올린다 |
@@ -41,7 +42,7 @@
 
 | 파일 | 내용 |
 |---|---|
-| [config/pipeline.json](../config/pipeline.json) | 리전, 함수와 역할 이름, 버킷 접두어, 태그, 분할 기간, 하이퍼파라미터, 합격 기준. `cloud.bucket`을 적으면 그 버킷을 쓰는데, 이름이 `bike-demand-mlops-`로 시작하고 이 과제의 태그가 붙은 버킷이어야 한다. 버킷뿐 아니라 IAM 역할, Lambda 함수, 로그 그룹도 이 과제의 태그(`project`, `owner`)가 없으면 배포와 정리에서 건드리지 않고 멈춘다 |
+| [config/pipeline.json](../config/pipeline.json) | 리전, 함수와 역할 이름, 버킷 접두어, 태그, 분할 기간, 하이퍼파라미터, 합격 기준. `cloud.bucket`을 적으면 그 버킷을 쓰는데, 이름이 `bike-demand-mlops-`로 시작하고 이 과제의 태그가 붙은 버킷이어야 한다. 버킷뿐 아니라 IAM 역할, Lambda 함수, 로그 그룹도 이 과제의 태그(`project`, `owner`)가 없으면 배포와 정리에서 건드리지 않고 멈춘다. 예외로, 이름이 `bike-demand-mlops-<리전>-<16진수 8자리>` 형식이고 태그도 객체도 없는 빈 버킷은 배포가 태그를 붙여 이어받는다(버킷을 만든 직후 태그를 붙이기 전에 멈춘 경우) |
 | [config/lambda.json](../config/lambda.json) | 런타임, 메모리, 제한 시간, 임시 저장소, 예약 동시성, 로그 보관 일수 |
 | Lambda 환경 변수 | `MODEL_URI`(S3 경로와 객체 버전), `MODEL_VERSION`, `MODEL_SHA256`, `JOBLIB_MULTIPROCESSING=0` |
 
@@ -55,13 +56,13 @@ Lambda 실행 역할 `bike-demand-predict-role`의 권한은 두 가지뿐이다
 
 `deploy`는 AWS에 접속하기 전에 다음을 확인하고, 하나라도 틀리면 멈춘다.
 
-1. 모델 파일의 sha256이 metadata.json과 같고, 모델이 지금 학습 자료(`train.csv` sha256)와 하이퍼파라미터, 버전으로 학습됐다.
+1. 모델 파일의 sha256이 metadata.json과 같고, 정리한 자료가 설정의 분할 기간과 맞으며, 모델이 지금 학습 자료(`train.csv` sha256), 하이퍼파라미터, 버전, 특성 코드로 학습됐다.
 2. 이 모델로 `evaluate`를 통과한 기록(`results/evaluation/metrics.json`)이 있고, 그때의 합격 기준과 평가 자료 sha256이 지금 설정, 지금 파일과 같다.
 3. 이 모델로 `check-local`을 통과한 기록(`results/service_check/local.json`)이 있고, 그때의 Lambda 코드 해시가 지금 코드와 같다.
 4. `build/lambda_package.zip`의 해시가 `results/cloud/package.json`과 같다.
 5. zip에 넣은 Lambda 코드와 `requirements-lambda.txt`가 지금 파일과 같고, zip의 런타임과 아키텍처가 Lambda 설정과 같다.
 
-그래서 평가에 떨어진 모델, 검사하지 않은 코드, 이전 코드로 만든 zip은 배포되지 않는다. 또 `train`은 후보 모델을 `models/_candidate/`에 만들고 `evaluate`를 통과해야만 `models/hgb-v1/`로 복사하므로, 평가에 떨어진 모델이 이미 합격한 모델을 덮지 않는다. `evaluate`와 `deploy`는 모델의 학습 자료 sha256, 하이퍼파라미터, 버전이 지금 설정과 같은지도 확인한다.
+그래서 평가에 떨어진 모델, 검사하지 않은 코드, 이전 코드로 만든 zip은 배포되지 않는다. 또 `train`은 후보 모델을 `models/_candidate/`에 만들고 `evaluate`를 통과해야만 `models/hgb-v1/`로 복사하므로, 평가에 떨어진 모델이 이미 합격한 모델을 덮지 않는다. `evaluate`와 `deploy`는 모델의 학습 자료 sha256, 하이퍼파라미터, 버전, 특성 코드가 지금과 같은지, 정리한 자료가 설정의 분할 기간과 맞는지도 확인한다.
 
 ## 2. 데이터와 결과의 위치
 
@@ -78,7 +79,7 @@ Lambda 실행 역할 `bike-demand-predict-role`의 권한은 두 가지뿐이다
 
 Lambda는 S3에서 받은 코드의 사본을 따로 보관한다(기본 저장 방식). 그래서 수명 주기 규칙으로 `packages/`의 zip이 지워져도 배포된 함수에는 영향이 없다.
 
-`deploy`는 자원을 만들기 전에 리전을 `.state/regions.json`(Git 제외)에 적는다. `status`와 `cleanup`은 지금 리전, 이 파일의 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전을 모두 조회하고 정리한다. 다른 리전에서 배포하다 중간에 실패해 남은 자원도 놓치지 않기 위해서다. IAM 역할은 리전과 상관없는 자원이라 모든 리전을 정리한 뒤 마지막에 지우고, 역할의 인라인 정책은 리전마다 따로 둔다.
+`deploy`는 자원을 만들기 전에 계정(sha256 해시)과 리전을 `.state/regions.json`(Git 제외)에 적는다. `status`와 `cleanup`은 지금 리전, 이 파일에서 같은 계정의 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전을 모두 조회하고 정리한다. 다른 계정의 배포 기록이 남아 있으면 `cleanup`은 실패로 기록하고 그 계정의 프로필로 다시 실행하라고 알린다. 다른 리전에서 배포하다 중간에 실패해 남은 자원도 놓치지 않기 위해서다. IAM 역할은 리전과 상관없는 자원이라 모든 리전을 정리한 뒤 마지막에 지우고, 역할의 인라인 정책은 리전마다 따로 둔다.
 
 공개 저장소에 계정 정보가 남지 않게 했다([bikeml/runlog.py](../bikeml/runlog.py)의 `sanitize`).
 - 버킷 이름에는 계정 ID 대신 임의 문자열을 넣는다. 다음 실행부터는 같은 접두어의 버킷을 목록에서 찾아 쓴다.
@@ -93,10 +94,11 @@ Lambda는 S3에서 받은 코드의 사본을 따로 보관한다(기본 저장 
 
 실행 전이다. 실행 순서와 확인할 것은 다음과 같다.
 
-1. `python -m bikeml --profile <프로필> run cloud`: package, deploy, smoke, cloud-eval을 순서대로 실행한다.
+1. `python -m bikeml --profile <프로필> run cloud`: package, deploy, smoke, cloud-eval, release를 순서대로 실행한다.
 2. deploy: 배포 전 확인, 버킷·역할·로그 그룹 생성, 모델과 패키지 업로드, 함수 생성, 버전 게시. 결과는 `results/cloud/deploy.json`
-3. smoke: 로컬과 같은 12개 사례를 Lambda에 보낸다. 응답, 요청 ID, 실행 시간, 메모리 사용량(REPORT 로그), Lambda 안의 라이브러리 버전을 남기고, 통과하면 `live` 별칭을 붙인다. 결과는 `results/service_check/cloud.json`
+3. smoke: 로컬과 같은 12개 사례를 Lambda에 보낸다. 응답, 요청 ID, 실행 시간, 메모리 사용량(REPORT 로그), Lambda 안의 라이브러리 버전을 남긴다. 결과는 `results/service_check/cloud.json`
 4. cloud-eval: 평가 자료 2,888건을 500건씩 6번 보내 MAE를 계산하고 로컬 예측과 같은지 비교한다. 결과는 `results/cloud/cloud_eval.json`
+5. release: 두 검사를 모두 통과한 버전에 `live` 별칭을 붙인다. 결과는 `results/cloud/release.json`
 
 ## 4. 실행 기록과 실패 처리
 
@@ -130,21 +132,21 @@ python -m bikeml --config config/demo_strict_criteria.json run evaluate check-lo
 
 | 항목 | 결과 |
 |---|---|
-| run_id | `20261119T221433-76275e` |
+| run_id | `20261119T223856-cfa909` |
 | evaluate | failed. `RuntimeError: 합격 기준 미달: {'beats_all_baselines': True, 'mae_reduction_vs_hour_baseline': 0.499, 'meets_reduction': False}` |
 | check-local | skipped (`이전 단계 실패로 실행하지 않음: evaluate`) |
-| 실패한 결과 | `results/failed/20261119T221433-76275e_evaluate/` (metrics.json의 `passed: false`, error.txt) |
+| 실패한 결과 | `results/failed/20261119T223856-cfa909_evaluate/` (metrics.json의 `passed: false`, error.txt) |
 | 정상 결과 | `results/evaluation/metrics.json`은 그대로 (`passed: true`, 기준 0.3). 후보 모델은 `models/hgb-v1/`로 옮겨지지 않았다 |
 | 배포 | 정상 설정으로는 배포 전 확인을 통과한다. 엄격한 설정으로 `deploy`를 실행하면 "evaluate 이후 합격 기준이나 평가 자료가 바뀜"으로 멈춘다 |
 
-같은 설정으로 이전 코드에서 실행한 기록(`20261119T212432-8dab61`, `20261119T215025-2b3b55`)도 `results/failed/`에 남아 있다.
+같은 설정으로 이전 코드에서 실행한 기록(`20261119T212432-8dab61`, `20261119T215025-2b3b55`, `20261119T221433-76275e`)도 `results/failed/`에 남아 있다.
 
 ## 5. 오류 재현과 복구
 
 실행 전이다. 과제 예시 중 "잘못된 모델 경로"를 클라우드에서 재현할 계획이다.
 
-1. 재현: `python -m bikeml --profile <프로필> run deploy smoke cloud-eval --model-uri-override s3://<버킷>/models/hgb-v1/model.pkl` (실제 파일은 `model.joblib`). 이 배포 기록은 `results/cloud/deploy_override.json`에 따로 남는다.
-2. 예상 영향: 모든 요청이 `500 MODEL_LOAD_FAILED`, smoke 실패, cloud-eval은 실행하지 않음(skipped). smoke가 실패했으므로 `live` 별칭은 이전 정상 버전을 그대로 가리킨다.
+1. 재현: `python -m bikeml --profile <프로필> run deploy smoke cloud-eval release --model-uri-override s3://<버킷>/models/hgb-v1/model.pkl` (실제 파일은 `model.joblib`). 이 배포 기록은 `results/cloud/deploy_override.json`에 따로 남는다.
+2. 예상 영향: 모든 요청이 `500 MODEL_LOAD_FAILED`, smoke 실패, cloud-eval과 release는 실행하지 않음(skipped). release가 실행되지 않으므로 `live` 별칭은 이전 정상 버전을 그대로 가리킨다.
 3. 원인 조사: 응답 메시지와 CloudWatch 로그를 보고, 운영자 권한으로 `aws s3api head-object`를 실행해 비교한다. S3는 `s3:ListBucket` 권한이 없는 요청자에게 없는 객체를 404가 아니라 403(Forbidden)으로 알린다. Lambda 역할에는 이 권한이 없어서 403으로 보일 것으로 예상하며, 이 점도 확인한다.
 4. 수정: 경로를 바로잡아 다시 배포하고, 배포 단계에서 `MODEL_URI`가 가리키는 객체가 있는지와 sha256이 맞는지 확인하는 코드를 추가한다.
 5. 재검사: 실패했던 같은 명령과 정상 입력(smoke 12건, cloud-eval 2,888건)을 다시 실행해 결과를 남긴다.
