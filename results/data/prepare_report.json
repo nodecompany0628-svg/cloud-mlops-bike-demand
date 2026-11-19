@@ -1,0 +1,64 @@
+{
+  "source_file": "data/raw/hour.csv",
+  "quality": {
+    "rows": 17379,
+    "days": 731,
+    "missing_hours": 165,
+    "days_with_missing_hours": 76,
+    "hum_zero_rows": 22,
+    "hum_zero_dates": [
+      "2011-03-10"
+    ],
+    "windspeed_zero_rows": 2180,
+    "weathersit_counts": {
+      "1": 11413,
+      "2": 4544,
+      "3": 1419,
+      "4": 3
+    },
+    "cnt_min": 1,
+    "cnt_max": 977
+  },
+  "unit_conversion": {
+    "temp_c": "-8.0 + temp * (39.0 - -8.0)",
+    "feels_like_c": "-16.0 + atemp * (50.0 - -16.0)",
+    "humidity": "hum * 100.0",
+    "windspeed_kmh": "windspeed * 67.0"
+  },
+  "cleaning": {
+    "humidity_zero_to_missing": 22,
+    "missing_hours_not_imputed": 165,
+    "windspeed_zero_kept": 2180
+  },
+  "excluded_columns": {
+    "casual, registered": "합이 정답(cnt)과 같음 -> 정답 누출",
+    "instant": "행 번호(시간 순서) -> 서비스 입력에 없음",
+    "season": "월(mnth)로 대신함, 원자료 정의(1=봄)가 실제 달력과 어긋남",
+    "dteday, yr, mnth, weekday, workingday": "요청의 datetime, holiday 로 다시 계산(원자료 값과 일치 확인)"
+  },
+  "derived_feature_mismatches": 0,
+  "split": {
+    "rule": {
+      "train_start": "2011-01-01",
+      "train_end": "2012-08-31",
+      "test_start": "2012-09-01",
+      "test_end": "2012-12-31"
+    },
+    "train": {
+      "rows": 14491,
+      "first": "2011-01-01T00:00",
+      "last": "2012-08-31T23:00",
+      "cnt_mean": 179.34,
+      "cnt_median": 135.0,
+      "humidity_missing": 22
+    },
+    "test": {
+      "rows": 2888,
+      "first": "2012-09-01T00:00",
+      "last": "2012-12-31T23:00",
+      "cnt_mean": 240.23,
+      "cnt_median": 193.0,
+      "humidity_missing": 0
+    }
+  }
+}

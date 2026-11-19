@@ -1,0 +1,29 @@
+{
+  "zip": "build/lambda_package.zip",
+  "zip_sha256": "6135ef865f2807ac33e43306240721361805061c16896eb5177d450b9318a5ae",
+  "zip_mb": 53.14,
+  "unzipped_mb": 169.15,
+  "removed_test_dirs_mb": 30.06,
+  "file_count": 2136,
+  "runtime": "python3.12",
+  "platforms": [
+    "manylinux_2_28_x86_64",
+    "manylinux_2_17_x86_64",
+    "manylinux2014_x86_64"
+  ],
+  "installed": [
+    "cloudpickle-3.1.3.dist-info",
+    "joblib-1.6.0.dist-info",
+    "narwhals-2.29.0.dist-info",
+    "numpy-2.5.5.dist-info",
+    "scikit_learn-1.9.1.dist-info",
+    "scipy-1.18.1.dist-info",
+    "threadpoolctl-3.8.0.dist-info"
+  ],
+  "app_files": {
+    "lambda_function.py": "9938c141af99536b79a6489ed1479e0690d6bd6d43e2fcfc80eeffab790c2b4f",
+    "bikeml/__init__.py": "e7737c04b34a9b2dd3cecc976ced3ed5b9c4456a217ea754119dee27e64cce56",
+    "bikeml/features.py": "c6c82dcf857eb55242050f2e10d5c6f52e3df66fc0dad47ddf9e2491a558624d",
+    "bikeml/service.py": "89c61b6ee3a8ad0ed861c5ea70d13d05dd5e616181fdf855c0281d3e9efb5a3a"
+  }
+}
