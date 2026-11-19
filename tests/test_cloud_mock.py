@@ -514,7 +514,8 @@ def test_bucket_from_failed_deploy_is_still_cleaned(sandbox, monkeypatch):
 
 
 CURRENT_NAMES = {"function": "bike-demand-predict", "role": "bike-demand-predict-role",
-                 "permissions_boundary": "bike-demand-predict-boundary", "bucket_prefix": "bike-demand-mlops"}
+                 "permissions_boundary": "bike-demand-predict-boundary", "bucket_prefix": "bike-demand-mlops",
+                 "tags": {"project": "cloud-mlops-assignment", "owner": "student"}}
 
 
 def write_deploy_record(cloud_fields):
@@ -875,7 +876,7 @@ def test_two_pending_name_sets_can_both_be_cleaned(sandbox, monkeypatch):
             f.write(json.dumps({"run_id": "y", "step": "deploy", "status": "failed", "cloud": {
                 "region": "ap-northeast-2", "function": "bike-demand-predict-2", "role": "bike-demand-predict-role",
                 "permissions_boundary": "bike-demand-predict-boundary", "bucket_prefix": "bike-demand-mlops",
-                "resources_touched": True}}) + "\n")
+                "tags": {"project": "cloud-mlops-assignment", "owner": "student"}, "resources_touched": True}}) + "\n")
         rc_old = run(["cleanup"])
         functions = boto3.client("lambda", region_name="ap-northeast-2").list_functions()["Functions"]
         rc_new = run_with(renamed, "cleanup")
@@ -1039,6 +1040,8 @@ def test_foreign_log_group_in_recorded_region_does_not_block_cleanup(sandbox, mo
 
 def test_role_is_kept_while_foreign_function_uses_it(sandbox, monkeypatch):
     monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    sleeps = []
+    monkeypatch.setattr(cloud.time, "sleep", sleeps.append)
     with mock_aws():
         assert run(["deploy"]) == 0
         role_arn = boto3.client("iam", region_name="ap-northeast-2").get_role(
@@ -1053,6 +1056,7 @@ def test_role_is_kept_while_foreign_function_uses_it(sandbox, monkeypatch):
     clean = failed_result(sandbox, rec, "results/cloud/cleanup.json")
     role_action = next(a for a in clean["actions"] if a["resource"] == "iam:bike-demand-predict-role")
     assert rc == 1 and roles == ["bike-demand-predict-role"] and "태그 없는 같은 이름의 함수" in role_action["result"]
+    assert sleeps == []
 
 
 def test_cleanup_elsewhere_does_not_drop_recorded_bucket(sandbox, monkeypatch):
@@ -1096,3 +1100,52 @@ def test_bucket_that_only_starts_with_the_prefix_is_not_ours(sandbox, monkeypatc
         rc_clean = run(["cleanup"])
         left = [b["Name"] for b in s3.list_buckets()["Buckets"]]
     assert rc_deploy == 0 and rc_clean == 0 and left == ["bike-demand-mlops-ap-northeast-2-mydata"]
+
+
+def test_changed_tags_make_cleanup_wait_for_the_old_config(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    retagged = load_config()
+    retagged["cloud"]["tags"] = {**retagged["cloud"]["tags"], "owner": "someone"}
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        rc_status = run_with(retagged, "status")
+        rc_clean = run_with(retagged, "cleanup")
+        functions = boto3.client("lambda", region_name="ap-northeast-2").list_functions()["Functions"]
+        rc_old = run(["cleanup"])
+        left = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
+    assert rc_status == 1 and rc_clean == 1 and len(functions) == 1
+    assert "태그" in records(sandbox)[2]["error"] and rc_old == 0 and left == []
+
+
+def test_masked_recorded_bucket_name_does_not_break_cleanup(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        write_deploy_record({"bucket": "bike-demand-mlops-<ACCOUNT_ID>"})
+        rc = run(["cleanup"])
+    assert rc == 0 and read(sandbox, "results/cloud/cleanup.json")["all_gone"] is True
+
+
+def test_cleanup_interrupted_after_deleting_still_writes_result(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        assert run(["deploy"]) == 0
+
+        def boom(self):
+            raise RuntimeError("connection lost")
+        monkeypatch.setattr(cloud.Cloud, "foreign_function_uses_role", boom)
+        rc = run(["cleanup"])
+    rec = records(sandbox)[-1]
+    clean = failed_result(sandbox, rec, "results/cloud/cleanup.json")
+    assert rc == 1 and "connection lost" in clean["interrupted"] and clean["actions"] and clean["all_gone"] is False
+    assert rec["summary"]["all_gone"] is False
+
+
+def test_unknown_bucket_next_to_foreign_bucket_counts_as_remaining():
+    from types import SimpleNamespace
+
+    found = {"a": {"exists": None, "name": "a", "error": "503"}, "b": {"exists": True, "name": "b", "ours": False}}
+    fake = SimpleNamespace(buckets=["a", "b"], one_bucket_status=lambda name: found[name])
+    status = cloud.Cloud.bucket_status(fake)
+    resources = {"iam_role": {"exists": False}, "regions": {"r": {"s3_bucket": status}}}
+    assert status["ours"] is None and cloud.remaining(resources) == ["r:s3_bucket"]

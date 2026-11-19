@@ -81,7 +81,7 @@
 | 기준 방법 MAE | 시간대 평균 94.78, 전체 평균 170.51 대/시간. 시간대 평균보다 49.9% 낮아 합격 | 같은 파일 |
 | 서비스 검사 (로컬 핸들러) | 12/12 통과 | [results/service_check/local.json](results/service_check/local.json) |
 | 실패 처리 예시 | 합격 기준을 90%로 올린 설정에서 evaluate 실패, check-local 건너뜀, 정상 결과는 그대로 | [results/failed/](results/failed/), [runs/run_log.jsonl](runs/run_log.jsonl) |
-| 테스트 | 147개 통과 | `python -m pytest -q` |
+| 테스트 | 151개 통과 | `python -m pytest -q` |
 | Lambda 패키지 | zip 64.29MB, 압축 해제 198.94MB (한도 250MB) | [results/cloud/package.json](results/cloud/package.json) |
 | 실제 AWS 실행 | 실행 전 | [docs/cloud.md](docs/cloud.md) |
 
@@ -99,8 +99,8 @@
 1. 관리자(또는 루트)가 [docs/iam/lambda-boundary.json](docs/iam/lambda-boundary.json)으로 `bike-demand-predict-boundary`라는 고객 관리형 정책을 만든다. Lambda 실행 역할의 권한 경계로 쓰인다. 루트나 관리자 키로 배포하면 도구가 없을 때 직접 만든다.
 2. IAM 사용자를 만들고, [docs/iam/operator-policy.json](docs/iam/operator-policy.json)으로 고객 관리형 정책을 만들어 붙인다. 이 정책은 2,048자를 넘어 사용자 인라인 정책으로는 붙일 수 없다(고객 관리형 정책 한도는 6,144자). 이 정책으로는 권한 경계가 붙은 역할만 만들거나 바꿀 수 있어서, 역할 정책을 넓혀 계정 권한을 얻는 길이 막혀 있다.
 3. 이 PC에 프로필로 등록한다: `aws configure --profile mlops` 또는 `~/.aws/credentials`에 직접 적는다. 키는 저장소에 넣지 않는다.
-4. 리전과 이름은 [config/pipeline.json](config/pipeline.json)의 `cloud`에서, 메모리·제한 시간·동시 실행은 [config/lambda.json](config/lambda.json)에서 바꾼다. 함수, 역할, 권한 경계, 버킷 접두어 이름을 바꾸려면 먼저 지금 이름으로 `cleanup`을 실행한다(정리하지 않은 이전 이름의 배포 기록이 있으면 `deploy`는 멈추고, 지금 이름으로 배포한 기록이 없는 `cleanup`은 아무것도 지우지 않고 멈추며, `status`는 실패로 기록한다). 그리고 [docs/iam/operator-policy.json](docs/iam/operator-policy.json)의 자원 이름과 [docs/iam/lambda-boundary.json](docs/iam/lambda-boundary.json)의 함수 이름, 버킷 접두어도 같이 바꾸고, 관리자가 경계 정책을 그 내용으로 고쳐야 한다. 경계 정책의 내용이 설정과 다르면 `deploy`는 자원을 만들기 전에 멈춘다.
-5. S3 버킷, IAM 역할, 로그 그룹, Lambda 함수는 `deploy` 단계가 만든다. 버킷 이름은 `bike-demand-mlops-<리전>-<임의 8자리>`이고, 다음 실행부터는 같은 접두어의 버킷을 찾아 다시 쓴다.
+4. 리전과 이름은 [config/pipeline.json](config/pipeline.json)의 `cloud`에서, 메모리·제한 시간·동시 실행은 [config/lambda.json](config/lambda.json)에서 바꾼다. 함수, 역할, 권한 경계, 버킷 접두어 이름이나 태그를 바꾸려면 먼저 지금 이름으로 `cleanup`을 실행한다(정리하지 않은 이전 이름의 배포 기록이 있으면 `deploy`는 멈추고, 지금 이름으로 배포한 기록이 없는 `cleanup`은 아무것도 지우지 않고 멈추며, `status`는 실패로 기록한다). 그리고 [docs/iam/operator-policy.json](docs/iam/operator-policy.json)의 자원 이름과 [docs/iam/lambda-boundary.json](docs/iam/lambda-boundary.json)의 함수 이름, 버킷 접두어도 같이 바꾸고, 관리자가 경계 정책을 그 내용으로 고쳐야 한다. 경계 정책의 내용이 설정과 다르면 `deploy`는 자원을 만들기 전에 멈춘다.
+5. S3 버킷, IAM 역할, 로그 그룹, Lambda 함수는 `deploy` 단계가 만든다. 버킷 이름은 `bike-demand-mlops-<리전>-<임의 8자리>`이고, 다음 실행부터는 이 형식에 맞는 버킷을 찾아 다시 쓴다.
 
 ## 6. 설치
 

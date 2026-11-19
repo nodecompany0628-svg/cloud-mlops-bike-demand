@@ -102,8 +102,8 @@ class Cloud:
         self.logs = self.session.client("logs")
         self.bucket_base = c["bucket_prefix"]
         self.configured = c.get("bucket")
-        with_account = [k for k in ("function_name", "role_name", "permissions_boundary", "bucket_prefix", "bucket")
-                        if self.account in str(c.get(k) or "")]
+        with_account = [k for k in ("function_name", "role_name", "permissions_boundary", "bucket_prefix", "bucket", "tags")
+                        if self.account in json.dumps(c.get(k) or "", ensure_ascii=False)]
         if with_account:
             raise RuntimeError(f"config 의 cloud.{', cloud.'.join(with_account)} 에 AWS 계정 ID 가 들어 있습니다. 공개 기록에서는 "
                                "계정 ID 를 가리므로 이 도구가 기록에서 이름을 다시 읽을 수 없습니다. 계정 ID 를 뺀 이름을 쓰세요")
@@ -123,7 +123,8 @@ class Cloud:
         return {"region": self.region, "credentials": "profile" if self.profile else "environment",
                 "caller_type": self.caller_type,
                 "function": self.fn, "role": self.role, "permissions_boundary": self.boundary_name,
-                "bucket_prefix": self.bucket_base, "bucket": self.bucket, "log_group": self.log_group}
+                "bucket_prefix": self.bucket_base, "tags": dict(self.tags), "bucket": self.bucket,
+                "log_group": self.log_group}
 
     def role_arn(self) -> str:
         return f"arn:aws:iam::{self.account}:role/{self.role}"
@@ -239,6 +240,8 @@ class Cloud:
             self.s3.head_bucket(Bucket=name)
         except ClientError as e:
             return _code(e) in NOT_FOUND
+        except Exception:
+            return False
         return False
 
     def ours_or_unknown(self, get_tags) -> bool | None:
@@ -255,13 +258,11 @@ class Cloud:
         return None
 
     def foreign_function_uses_role(self) -> bool:
-        from botocore.exceptions import ClientError
-
         try:
             conf = self.lam.get_function(FunctionName=self.fn)["Configuration"]
         except self.lam.exceptions.ResourceNotFoundException:
             return False
-        except ClientError:
+        except Exception:
             return True
         return conf.get("Role") == self.role_arn()
 
@@ -556,7 +557,7 @@ class Cloud:
             return found[0]
         states = [b["exists"] for b in found]
         combined = None if None in states else any(states)
-        owners = [b.get("ours") for b in found if b["exists"]]
+        owners = [b.get("ours") for b in found if b["exists"] is not False]
         ours = True if True in owners else (None if None in owners else False)
         return {"exists": combined, "ours": ours, "buckets": found}
 
@@ -785,7 +786,16 @@ def other_account_regions(account: str) -> list[str]:
     return sorted({d["region"] for d in deployments() if d["account"] != account_key(account)})
 
 
-NAME_KEYS = ("function", "role", "permissions_boundary", "bucket_prefix")
+NAME_KEYS = ("function", "role", "permissions_boundary", "bucket_prefix", "tags")
+
+
+def _tags_key(tags) -> str | None:
+    return json.dumps(tags, sort_keys=True, ensure_ascii=False) if isinstance(tags, dict) and tags else None
+
+
+def _names_of(info: dict) -> tuple:
+    return (info.get("function"), info.get("role"), info.get("permissions_boundary"), info.get("bucket_prefix"),
+            _tags_key(info.get("tags")))
 
 
 def deploy_history() -> dict:
@@ -793,7 +803,7 @@ def deploy_history() -> dict:
     pending, buckets, creating = {}, set(), set()
     for r in records:
         info = r.get("cloud") or {}
-        names = tuple(info.get(k) for k in NAME_KEYS)
+        names = _names_of(info)
         summary = r.get("summary") if isinstance(r.get("summary"), dict) else {}
         if r.get("step") == "deploy" and info.get("resources_touched") is True:
             if all(isinstance(n, str) and n for n in names):
@@ -814,13 +824,14 @@ def deploy_history() -> dict:
 
 def renamed_leftovers(cfg: dict) -> tuple[list[dict], bool]:
     c = cfg["cloud"]
-    current = (c["function_name"], c["role_name"], c["permissions_boundary"], c["bucket_prefix"])
+    current = (c["function_name"], c["role_name"], c["permissions_boundary"], c["bucket_prefix"],
+               _tags_key(c.get("tags")))
     pending = deploy_history()["pending"]
     others = [dict(zip(NAME_KEYS, n, strict=True)) for n in pending if n != current]
     return others, current in pending
 
 
-RENAMED = ("설정의 이름(함수, 역할, 권한 경계, 버킷 접두어)을 바꾸기 전에 배포하고 아직 정리하지 않은 자원이 있습니다 {names}. "
+RENAMED = ("설정의 이름(함수, 역할, 권한 경계, 버킷 접두어)이나 태그를 바꾸기 전에 배포하고 아직 정리하지 않은 자원이 있습니다 {names}. "
            "이전 이름의 설정으로 cleanup 을 먼저 실행하세요")
 
 
@@ -1261,17 +1272,10 @@ BROKEN_RUN_LOG = ("runs/run_log.jsonl 에 읽을 수 없는 줄이 {n}개 있어
                   "그 줄을 고치거나 지운 뒤 다시 실행하세요")
 
 
-def step_cleanup(ctx) -> None:
-    _, broken = read_run_log()
-    renamed, current_pending = renamed_leftovers(ctx.cfg)
-    if renamed and not current_pending:
-        write_json(ctx.out("results/cloud/cleanup.json"), {"cleaned_at": now_iso(), "refused": True,
-                                                           "renamed_leftovers": renamed, "actions": []})
-        raise RuntimeError(RENAMED.format(names=renamed) + ". 지금 이름으로 배포한 기록이 없고, 이전 배포와 버킷이나 역할을 "
-                           "같이 쓸 수 있어 아무것도 지우지 않았습니다")
-    clouds, unreachable = _clouds(ctx)
+def _cleanup_all(clouds: list[Cloud], unreachable: list[dict], broken: int, renamed: list, deleted: list) -> dict:
     before = _status_all(clouds)
-    deleted = [d for c in clouds for d in c.cleanup_regional()]
+    for c in clouds:
+        deleted.extend(c.cleanup_regional())
     own_unreachable = [u.get("bucket") or u["region"] for u in unreachable if u["blocking"]]
     keep_reasons = []
     if not all(d["result"] in ("deleted", "not_found") or d["result"].startswith("skipped") for d in deleted):
@@ -1285,7 +1289,7 @@ def step_cleanup(ctx) -> None:
     role_gone = False
     if not keep_reasons:
         role_actions = clouds[0].cleanup_role()
-        deleted += role_actions
+        deleted.extend(role_actions)
         role_gone = role_actions[0]["result"] in ("deleted", "not_found")
     else:
         deleted.append({"resource": f"iam:{clouds[0].role}",
@@ -1297,17 +1301,41 @@ def step_cleanup(ctx) -> None:
         time.sleep(STATUS_WAIT_S)
         after = _status_all(clouds)
     errors = [d for d in deleted if d["result"].startswith("error")]
-    others = other_account_regions(clouds[0].account)
-    owned = set(clouds[0].all_bucket_names())
     gone = {d["resource"].split(":s3:", 1)[1] for d in deleted
             if ":s3:" in d["resource"] and d["result"] in ("deleted", "not_found")}
-    gone |= {n for n in recorded_buckets() - owned if clouds[0].bucket_missing(n)}
-    gone = sorted(n for n in gone if "*" not in n)
-    report = {"cleaned_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
-              "regions_unreachable": unreachable, "run_log_unreadable_lines": broken, "renamed_leftovers": renamed,
-              "before": before, "actions": deleted, "errors": errors, "after": after, "not_ours": not_ours(after),
-              "buckets_gone": gone,
-              "all_gone": all_gone(after) and not own_unreachable and not broken, "other_account_regions": others}
+    try:
+        owned = set(clouds[0].all_bucket_names())
+        gone |= {n for n in recorded_buckets() - owned if clouds[0].bucket_missing(n)}
+    except Exception as e:
+        errors.append({"resource": "s3:ListBuckets", "result": f"error: {type(e).__name__}"})
+    return {"cleaned_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
+            "regions_unreachable": unreachable, "run_log_unreadable_lines": broken, "renamed_leftovers": renamed,
+            "before": before, "actions": deleted, "errors": errors, "after": after, "not_ours": not_ours(after),
+            "buckets_gone": sorted(n for n in gone if "*" not in n),
+            "all_gone": all_gone(after) and not own_unreachable and not broken,
+            "other_account_regions": other_account_regions(clouds[0].account)}
+
+
+def step_cleanup(ctx) -> None:
+    _, broken = read_run_log()
+    renamed, current_pending = renamed_leftovers(ctx.cfg)
+    if renamed and not current_pending:
+        write_json(ctx.out("results/cloud/cleanup.json"), {"cleaned_at": now_iso(), "refused": True,
+                                                           "renamed_leftovers": renamed, "actions": []})
+        raise RuntimeError(RENAMED.format(names=renamed) + ". 지금 이름으로 배포한 기록이 없고, 이전 배포와 버킷이나 역할을 "
+                           "같이 쓸 수 있어 아무것도 지우지 않았습니다")
+    clouds, unreachable = _clouds(ctx)
+    deleted = []
+    try:
+        report = _cleanup_all(clouds, unreachable, broken, renamed, deleted)
+    except Exception as e:
+        write_json(ctx.out("results/cloud/cleanup.json"), {"cleaned_at": now_iso(), "interrupted": f"{type(e).__name__}: {e}",
+                                                           "actions": deleted, "all_gone": False})
+        ctx.summary = {"all_gone": False, "actions": {d["resource"]: d["result"] for d in deleted}}
+        raise
+    after, errors, others = report["after"], report["errors"], report["other_account_regions"]
+    own_unreachable = [u.get("bucket") or u["region"] for u in unreachable if u["blocking"]]
+    gone = report["buckets_gone"]
     write_json(ctx.out("results/cloud/cleanup.json"), report)
     ctx.cloud = {**clouds[0].info(), "regions_checked": report["regions_checked"]}
     ctx.summary = {"all_gone": report["all_gone"], "actions": {d["resource"]: d["result"] for d in deleted},
