@@ -510,18 +510,28 @@ def test_bucket_from_failed_deploy_is_still_cleaned(sandbox, monkeypatch):
     assert rc == 0 and left == []
 
 
-def test_recorded_bucket_of_another_account_is_skipped(sandbox, monkeypatch):
-    real_region = cloud.Cloud.bucket_region
+CURRENT_NAMES = {"function": "bike-demand-predict", "role": "bike-demand-predict-role",
+                 "permissions_boundary": "bike-demand-predict-boundary", "bucket_prefix": "bike-demand-mlops"}
+
+
+def write_deploy_record(cloud_fields):
     runlog.RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
     with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"run_id": "x", "step": "deploy", "status": "success",
-                            "cloud": {"region": "ap-northeast-2", "bucket": "bike-demand-mlops-theirs",
-                                      "resources_touched": True}}) + "\n")
+        f.write(json.dumps({"run_id": "x", "step": "deploy", "status": "failed", "cloud": {
+            "region": "ap-northeast-2", **CURRENT_NAMES, "resources_touched": True, **cloud_fields}}) + "\n")
+
+
+def test_recorded_bucket_name_that_is_not_valid_is_ignored(sandbox):
+    write_deploy_record({"bucket": "bike-demand-mlops-<ACCOUNT_ID>", "creating_bucket": []})
+    with mock_aws():
+        assert run(["status"]) == 0
+
+
+def test_recorded_bucket_of_another_account_is_skipped(sandbox, monkeypatch):
+    write_deploy_record({"bucket": "bike-demand-mlops-theirs"})
 
     def region(self, name):
-        if name == "bike-demand-mlops-theirs":
-            raise ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetBucketLocation")
-        return real_region(self, name)
+        raise AssertionError("이 계정에 없는 버킷의 위치를 조회하면 안 됨")
     with mock_aws():
         monkeypatch.setattr(cloud.Cloud, "bucket_region", region)
         assert run(["cleanup"]) == 0
@@ -557,11 +567,7 @@ def test_existing_role_without_boundary_is_refused(sandbox):
 def test_configured_bucket_left_untagged_is_adopted(sandbox):
     cfg = load_config()
     cfg["cloud"]["bucket"] = "bike-demand-mlops-mine"
-    runlog.RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
-    with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"run_id": "x", "step": "deploy", "status": "failed",
-                            "cloud": {"region": "ap-northeast-2", "bucket": "bike-demand-mlops-mine",
-                                      "creating_bucket": "bike-demand-mlops-mine"}}) + "\n")
+    write_deploy_record({"bucket": "bike-demand-mlops-mine", "creating_bucket": "bike-demand-mlops-mine"})
     with mock_aws():
         boto3.client("s3", region_name="ap-northeast-2").create_bucket(
             Bucket="bike-demand-mlops-mine", CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"})
@@ -747,7 +753,7 @@ def test_untagged_log_group_blocks_deploy_before_anything_is_created(sandbox):
         iam = boto3.client("iam", region_name="ap-northeast-2")
         created = (boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
                    + iam.list_roles()["Roles"] + iam.list_policies(Scope="Local")["Policies"])
-    assert rc == 1 and "로그 그룹" in records(sandbox)[-1]["error"] and created == []
+    assert rc == 1 and "로그 그룹" in records(sandbox)[-1]["error"] and created == [] and cloud.deployments() == []
 
 
 def test_boundary_with_extra_versions_is_deleted(sandbox, monkeypatch):
@@ -924,15 +930,6 @@ def test_account_id_in_names_is_refused_before_anything_is_created(sandbox):
     assert rc == 1 and "계정 ID" in error and MOTO_ACCOUNT not in error and created == []
 
 
-def test_recorded_bucket_name_that_is_not_valid_is_ignored(sandbox):
-    runlog.RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
-    with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"run_id": "x", "step": "status", "status": "success",
-                            "cloud": {"region": "ap-northeast-2", "bucket": "bike-demand-mlops-<ACCOUNT_ID>"}}) + "\n")
-    with mock_aws():
-        assert run(["status"]) == 0
-
-
 def test_deploy_refuses_while_run_log_has_unreadable_lines(sandbox):
     runlog.RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
     with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
@@ -991,3 +988,33 @@ def test_release_rejects_same_version_with_other_revision(sandbox, monkeypatch):
         monkeypatch.setattr(boto3.Session, "client", client)
         rc = run(["release"])
     assert rc == 1 and "smoke" in records(sandbox)[-1]["error"]
+
+
+def test_untagged_bucket_the_tool_created_is_cleaned_after_config_change(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    cfg = load_config()
+    cfg["cloud"]["bucket"] = "bike-demand-mlops-mine"
+
+    def interrupted(self):
+        raise RuntimeError("tag_bucket 직전에 멈춤")
+    with mock_aws():
+        monkeypatch.setattr(cloud.Cloud, "tag_bucket", interrupted)
+        assert run_with(cfg, "deploy") == 1
+        rc = run(["cleanup"])
+        left = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
+    assert rc == 0 and left == []
+
+
+def test_smoke_does_not_invoke_untagged_function(sandbox, monkeypatch):
+    calls = []
+    monkeypatch.setattr(cloud.Cloud, "invoke", lambda self, payload, qualifier: calls.append(1))
+    with mock_aws():
+        arn = boto3.client("iam", region_name="ap-northeast-2").create_role(
+            RoleName="someone-else", AssumeRolePolicyDocument=json.dumps(cloud.LAMBDA_TRUST))["Role"]["Arn"]
+        boto3.client("lambda", region_name="ap-northeast-2").create_function(
+            FunctionName="bike-demand-predict", Runtime="python3.12", Role=arn, Handler="lambda_function.lambda_handler",
+            Code={"ZipFile": (sandbox / "lambda_package.zip").read_bytes()}, Publish=True)
+        rc_smoke = run(["smoke"])
+        rc_eval = run(["cloud-eval"])
+    recs = records(sandbox)
+    assert rc_smoke == 1 and rc_eval == 1 and "태그" in recs[-1]["error"] and calls == []

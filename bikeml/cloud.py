@@ -228,7 +228,7 @@ class Cloud:
 
     def leftover_bucket(self, tags: dict) -> bool:
         named = re.fullmatch(re.escape(self.bucket_prefix) + "[0-9a-f]{8}", self.bucket)
-        recorded = self.bucket == self.configured and self.bucket in created_buckets()
+        recorded = self.bucket in created_buckets()
         return not tags and (bool(named) or recorded) and self.bucket_is_empty()
 
     def tag_bucket(self) -> None:
@@ -735,20 +735,30 @@ def other_account_regions(account: str) -> list[str]:
 NAME_KEYS = ("function", "role", "permissions_boundary", "bucket_prefix")
 
 
-def renamed_leftovers(cfg: dict) -> tuple[list[dict], bool]:
-    c = cfg["cloud"]
-    current = (c["function_name"], c["role_name"], c["permissions_boundary"], c["bucket_prefix"])
+def pending_deploys() -> dict[tuple, dict]:
     records, _ = read_run_log()
-    pending = []
+    pending = {}
     for r in records:
         info = r.get("cloud") or {}
         names = tuple(info.get(k) for k in NAME_KEYS)
         summary = r.get("summary") if isinstance(r.get("summary"), dict) else {}
         complete = all(isinstance(n, str) and n for n in names)
-        if r.get("step") == "deploy" and info.get("resources_touched") is True and complete and names not in pending:
-            pending.append(names)
+        if r.get("step") == "deploy" and info.get("resources_touched") is True and complete:
+            entry = pending.setdefault(names, {"buckets": set(), "creating": set()})
+            for field in ("bucket", "creating_bucket"):
+                if isinstance(info.get(field), str) and info[field]:
+                    entry["buckets"].add(info[field])
+            if isinstance(info.get("creating_bucket"), str) and info["creating_bucket"]:
+                entry["creating"].add(info["creating_bucket"])
         elif r.get("step") == "cleanup" and summary.get("all_gone") is True:
-            pending = [n for n in pending if n != names]
+            pending.pop(names, None)
+    return pending
+
+
+def renamed_leftovers(cfg: dict) -> tuple[list[dict], bool]:
+    c = cfg["cloud"]
+    current = (c["function_name"], c["role_name"], c["permissions_boundary"], c["bucket_prefix"])
+    pending = pending_deploys()
     others = [dict(zip(NAME_KEYS, n, strict=True)) for n in pending if n != current]
     return others, current in pending
 
@@ -758,9 +768,7 @@ RENAMED = ("설정의 이름(함수, 역할, 권한 경계, 버킷 접두어)을
 
 
 def created_buckets() -> set[str]:
-    records, _ = read_run_log()
-    return {r["cloud"]["creating_bucket"] for r in records
-            if r.get("step") == "deploy" and isinstance((r.get("cloud") or {}).get("creating_bucket"), str)}
+    return {b for entry in pending_deploys().values() for b in entry["creating"]}
 
 
 def run_log_regions() -> set[str]:
@@ -893,7 +901,6 @@ def step_deploy(ctx) -> None:
     if renamed:
         raise RuntimeError(RENAMED.format(names=renamed))
     cloud = Cloud(cfg, ctx.args, ctx)
-    remember_region(cloud.account, cloud.region)
 
     res = {"cloud": cloud.info()}
     ctx.cloud = cloud.info()
@@ -907,6 +914,7 @@ def step_deploy(ctx) -> None:
     def record():
         ctx.cloud = {**cloud.info(), **marks}
     res["permissions_boundary"] = cloud.ensure_boundary()
+    remember_region(cloud.account, cloud.region)
     marks["resources_touched"] = True
     record()
     res["role"] = cloud.ensure_role()
@@ -951,6 +959,7 @@ def step_deploy(ctx) -> None:
 
 def _cloud_invoker(ctx):
     cloud = Cloud(ctx.cfg, ctx.args, ctx)
+    cloud.require_ours(f"Lambda 함수 {cloud.fn}", cloud.function_tags())
     version = ctx.state.get("deployed_version") or cloud.latest_version()
     meta, expected = expected_model(ctx.cfg)
     ctx.model = {"name": meta["name"], "version": meta["version"], "sha256": meta["model_sha256"]}
@@ -1108,20 +1117,7 @@ NOT_ENABLED = {"InvalidClientTokenId", "UnrecognizedClientException", "AuthFailu
 
 
 def recorded_buckets() -> set[str]:
-    records, _ = read_run_log()
-    names = set()
-    for r in records:
-        info = r.get("cloud") or {}
-        if r.get("step") == "deploy" and info.get("resources_touched") is True:
-            names |= {info.get("bucket"), info.get("creating_bucket")}
-    for name in ("deploy.json", "deploy_override.json"):
-        path = RESULTS / "cloud" / name
-        if path.exists():
-            names.add(load_json(path).get("cloud", {}).get("bucket"))
-    return {n for n in names if isinstance(n, str) and BUCKET_NAME.fullmatch(n)}
-
-
-BUCKET_NAME = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
+    return {b for entry in pending_deploys().values() for b in entry["buckets"]}
 
 
 def _clouds(ctx) -> tuple[list[Cloud], list[dict]]:
