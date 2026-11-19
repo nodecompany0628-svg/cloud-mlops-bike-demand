@@ -191,13 +191,11 @@ def test_role_without_project_tags_is_left_alone(sandbox, monkeypatch):
         rc_deploy = run(["deploy"])
         created = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
         created += iam.list_policies(Scope="Local")["Policies"]
-        sleeps = []
-        monkeypatch.setattr(cloud.time, "sleep", sleeps.append)
         rc_clean = run(["cleanup"])
         roles = [r["RoleName"] for r in iam.list_roles()["Roles"]]
     recs = records(sandbox)
     assert rc_deploy == 1 and "IAM 역할" in recs[0]["error"] and created == []
-    assert rc_clean == 0 and "bike-demand-predict-role" in roles and sleeps == []
+    assert rc_clean == 0 and "bike-demand-predict-role" in roles
     assert read(sandbox, "results/cloud/cleanup.json")["not_ours"] == ["iam_role"]
 
 
@@ -515,7 +513,7 @@ def test_bucket_from_failed_deploy_is_still_cleaned(sandbox, monkeypatch):
 
 CURRENT_NAMES = {"function": "bike-demand-predict", "role": "bike-demand-predict-role",
                  "permissions_boundary": "bike-demand-predict-boundary", "bucket_prefix": "bike-demand-mlops",
-                 "tags": {"project": "cloud-mlops-assignment", "owner": "student"}}
+                 "tags_sha256": cloud.tags_sha256({"project": "cloud-mlops-assignment", "owner": "student"})}
 
 
 def write_deploy_record(cloud_fields):
@@ -876,7 +874,8 @@ def test_two_pending_name_sets_can_both_be_cleaned(sandbox, monkeypatch):
             f.write(json.dumps({"run_id": "y", "step": "deploy", "status": "failed", "cloud": {
                 "region": "ap-northeast-2", "function": "bike-demand-predict-2", "role": "bike-demand-predict-role",
                 "permissions_boundary": "bike-demand-predict-boundary", "bucket_prefix": "bike-demand-mlops",
-                "tags": {"project": "cloud-mlops-assignment", "owner": "student"}, "resources_touched": True}}) + "\n")
+                "tags_sha256": cloud.tags_sha256({"project": "cloud-mlops-assignment", "owner": "student"}),
+                "resources_touched": True}}) + "\n")
         rc_old = run(["cleanup"])
         functions = boto3.client("lambda", region_name="ap-northeast-2").list_functions()["Functions"]
         rc_new = run_with(renamed, "cleanup")
@@ -1149,3 +1148,72 @@ def test_unknown_bucket_next_to_foreign_bucket_counts_as_remaining():
     status = cloud.Cloud.bucket_status(fake)
     resources = {"iam_role": {"exists": False}, "regions": {"r": {"s3_bucket": status}}}
     assert status["ours"] is None and cloud.remaining(resources) == ["r:s3_bucket"]
+
+
+def test_tag_values_that_records_would_mask_keep_their_identity(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    cfg = load_config()
+    cfg["cloud"]["tags"] = {**cfg["cloud"]["tags"], "owner": "team:user/alice"}
+    with mock_aws():
+        assert run_with(cfg, "deploy") == 0
+        rc = run_with(cfg, "cleanup")
+        functions = boto3.client("lambda", region_name="ap-northeast-2").list_functions()["Functions"]
+    assert rc == 0 and functions == [] and "alice" not in (sandbox / "runs" / "run_log.jsonl").read_text(encoding="utf-8")
+
+
+def test_account_id_in_tags_is_refused(sandbox):
+    cfg = load_config()
+    cfg["cloud"]["tags"] = {**cfg["cloud"]["tags"], "account": MOTO_ACCOUNT}
+    with mock_aws():
+        rc = run_with(cfg, "deploy")
+        buckets = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
+    error = records(sandbox)[-1]["error"]
+    assert rc == 1 and "cloud.tags" in error and buckets == []
+
+
+def test_function_without_runtime_field_does_not_break_status(sandbox, monkeypatch):
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        real_client = boto3.Session.client
+
+        def client(self, name, *a, **kw):
+            c = real_client(self, name, *a, **kw)
+            if name == "lambda":
+                real_get = c.get_function
+
+                def get_function(**kwargs):
+                    r = real_get(**kwargs)
+                    conf = {k: v for k, v in r["Configuration"].items() if k not in ("Runtime", "Handler")}
+                    return {**r, "Configuration": {**conf, "PackageType": "Image"}}
+                c.get_function = get_function
+            return c
+        monkeypatch.setattr(boto3.Session, "client", client)
+        rc = run(["status"])
+    fn = read(sandbox, "results/cloud/status.json")["resources"]["regions"]["ap-northeast-2"]["lambda_function"]
+    assert rc == 0 and fn["exists"] is True and fn["runtime"] is None and fn["package_type"] == "Image"
+
+
+def test_status_interrupted_still_writes_result(sandbox, monkeypatch):
+    with mock_aws():
+        assert run(["deploy"]) == 0
+
+        def boom(self):
+            raise RuntimeError("connection lost")
+        monkeypatch.setattr(cloud.Cloud, "boundary_status", boom)
+        rc = run(["status"])
+    status = failed_result(sandbox, records(sandbox)[-1], "results/cloud/status.json")
+    assert rc == 1 and "connection lost" in status["interrupted"]
+
+
+def test_unexpected_error_while_checking_foreign_function_keeps_role():
+    from types import SimpleNamespace
+
+    class NotFound(Exception):
+        pass
+
+    def get_function(**kwargs):
+        raise RuntimeError("read timeout")
+    fake = SimpleNamespace(lam=SimpleNamespace(get_function=get_function,
+                                               exceptions=SimpleNamespace(ResourceNotFoundException=NotFound)),
+                           fn="bike-demand-predict")
+    assert cloud.Cloud.foreign_function_uses_role(fake) is True

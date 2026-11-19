@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import json
 import os
@@ -123,7 +124,7 @@ class Cloud:
         return {"region": self.region, "credentials": "profile" if self.profile else "environment",
                 "caller_type": self.caller_type,
                 "function": self.fn, "role": self.role, "permissions_boundary": self.boundary_name,
-                "bucket_prefix": self.bucket_base, "tags": dict(self.tags), "bucket": self.bucket,
+                "bucket_prefix": self.bucket_base, "tags_sha256": tags_sha256(self.tags), "bucket": self.bucket,
                 "log_group": self.log_group}
 
     def role_arn(self) -> str:
@@ -573,9 +574,9 @@ class Cloud:
                 versions += [v["Version"] for v in page["Versions"]]
             out["lambda_function"] = {
                 "exists": True, "ours": self.ours_or_unknown(self.function_tags),
-                "state": conf.get("State"), "runtime": conf["Runtime"],
-                "memory_mb": conf["MemorySize"], "timeout_s": conf["Timeout"],
-                "last_modified": conf["LastModified"], "versions": versions,
+                "state": conf.get("State"), "package_type": conf.get("PackageType"), "runtime": conf.get("Runtime"),
+                "memory_mb": conf.get("MemorySize"), "timeout_s": conf.get("Timeout"),
+                "last_modified": conf.get("LastModified"), "versions": versions,
                 "reserved_concurrency": (f.get("Concurrency") or {}).get("ReservedConcurrentExecutions"),
                 "alias_live": self.alias_version(),
                 "env_MODEL_URI": conf.get("Environment", {}).get("Variables", {}).get("MODEL_URI")}
@@ -583,6 +584,8 @@ class Cloud:
             out["lambda_function"] = {"exists": False}
         except ClientError as e:
             out["lambda_function"] = {"exists": None, "error": _code(e)}
+        except Exception as e:
+            out["lambda_function"] = {"exists": None, "error": type(e).__name__}
         out["s3_bucket"] = self.bucket_status()
         try:
             g = self.find_log_group()
@@ -786,16 +789,17 @@ def other_account_regions(account: str) -> list[str]:
     return sorted({d["region"] for d in deployments() if d["account"] != account_key(account)})
 
 
-NAME_KEYS = ("function", "role", "permissions_boundary", "bucket_prefix", "tags")
+NAME_KEYS = ("function", "role", "permissions_boundary", "bucket_prefix", "tags_sha256")
 
 
-def _tags_key(tags) -> str | None:
-    return json.dumps(tags, sort_keys=True, ensure_ascii=False) if isinstance(tags, dict) and tags else None
+def tags_sha256(tags) -> str | None:
+    if not isinstance(tags, dict) or not tags:
+        return None
+    return hashlib.sha256(json.dumps(tags, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def _names_of(info: dict) -> tuple:
-    return (info.get("function"), info.get("role"), info.get("permissions_boundary"), info.get("bucket_prefix"),
-            _tags_key(info.get("tags")))
+    return tuple(info.get(k) for k in NAME_KEYS)
 
 
 def deploy_history() -> dict:
@@ -825,7 +829,7 @@ def deploy_history() -> dict:
 def renamed_leftovers(cfg: dict) -> tuple[list[dict], bool]:
     c = cfg["cloud"]
     current = (c["function_name"], c["role_name"], c["permissions_boundary"], c["bucket_prefix"],
-               _tags_key(c.get("tags")))
+               tags_sha256(c.get("tags")))
     pending = deploy_history()["pending"]
     others = [dict(zip(NAME_KEYS, n, strict=True)) for n in pending if n != current]
     return others, current in pending
@@ -1249,13 +1253,18 @@ def step_status(ctx) -> None:
     _, broken = read_run_log()
     renamed, _ = renamed_leftovers(ctx.cfg)
     clouds, unreachable = _clouds(ctx)
-    resources = _status_all(clouds)
+    ctx.cloud = {**clouds[0].info(), "regions_checked": [c.region for c in clouds]}
+    try:
+        resources = _status_all(clouds)
+        boundary = clouds[0].boundary_status()
+    except Exception as e:
+        write_json(ctx.out(f"results/cloud/{name}.json"), {"checked_at": now_iso(), **ctx.cloud,
+                                                          "interrupted": f"{type(e).__name__}: {e}"})
+        raise
     st = {"checked_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
           "regions_unreachable": unreachable, "run_log_unreadable_lines": broken, "renamed_leftovers": renamed,
           "other_account_regions": other_account_regions(clouds[0].account), "resources": resources,
-          "not_ours": not_ours(resources)}
-    ctx.cloud = {**clouds[0].info(), "regions_checked": st["regions_checked"]}
-    st["permissions_boundary"] = clouds[0].boundary_status()
+          "not_ours": not_ours(resources), "permissions_boundary": boundary}
     write_json(ctx.out(f"results/cloud/{name}.json"), st)
     ctx.summary = {"iam_role": resources["iam_role"].get("exists"),
                    **{f"{r}:{k}": v.get("exists") for r, res in resources["regions"].items() for k, v in res.items()}}
