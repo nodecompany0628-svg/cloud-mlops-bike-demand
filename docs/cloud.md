@@ -151,10 +151,10 @@ python -m bikeml --config config/demo_strict_criteria.json run evaluate check-lo
 
 | 항목 | 결과 |
 |---|---|
-| run_id | `20261120T052805-b2feac` |
+| run_id | `20261120T055642-d86ba0` |
 | evaluate | failed. `RuntimeError: 합격 기준 미달: {'beats_all_baselines': True, 'mae_reduction_vs_hour_baseline': 0.499, 'meets_reduction': False}` |
 | check-local | skipped (`이전 단계 실패로 실행하지 않음: evaluate`) |
-| 실패한 결과 | `results/failed/20261120T052805-b2feac_evaluate/` (metrics.json의 `passed: false`, error.txt) |
+| 실패한 결과 | `results/failed/20261120T055642-d86ba0_evaluate/` (metrics.json의 `passed: false`, error.txt) |
 | 정상 결과 | `results/evaluation/metrics.json`은 그대로 (`passed: true`, 기준 0.3). 후보 모델은 `models/hgb-v1/`로 옮겨지지 않았다 |
 | 배포 | 정상 설정으로는 배포 전 확인을 통과한다. 엄격한 설정으로 `deploy`를 실행하면 "evaluate 이후 합격 기준이나 평가 자료가 바뀜"으로 멈춘다 |
 
