@@ -6,7 +6,11 @@ import zipfile
 import boto3
 import pytest
 from botocore.exceptions import ClientError
-from moto import mock_aws
+
+try:
+    from moto import mock_aws
+except ImportError:
+    pytest.skip("moto 가 설치되지 않음 (pip install -r requirements-dev.txt)", allow_module_level=True)
 
 from bikeml import cloud, runlog
 from bikeml.cli import STEPS

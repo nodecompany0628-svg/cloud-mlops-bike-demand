@@ -19,7 +19,7 @@ RUN_LOG = ROOT / "runs" / "run_log.jsonl"
 STAGING = ROOT / "results" / "_staging"
 FAILED = ROOT / "results" / "failed"
 
-CODE_PATHS = ["bikeml", "lambda_src", "config", "requirements.txt", "requirements-lambda.txt", "tests", "samples/service_cases.json"]
+CODE_PATHS = ["bikeml", "lambda_src", "config", "requirements.txt", "requirements-dev.txt", "requirements-lambda.txt", "tests", "samples/service_cases.json"]
 
 
 def now_iso() -> str:

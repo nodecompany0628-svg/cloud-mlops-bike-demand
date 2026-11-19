@@ -85,7 +85,7 @@ python -m bikeml cleanup     AWS 자원 삭제 후 다시 조회
 
 - Python 3.12 (Lambda 런타임과 같은 버전. [uv](https://docs.astral.sh/uv/)를 쓰면 자동으로 받는다), Git
 - 확인한 환경: Windows 11, Python 3.12.13, pip 26.3, uv 0.11.16
-- 라이브러리 버전: [requirements.txt](requirements.txt)(로컬), [requirements-lambda.txt](requirements-lambda.txt)(Lambda 패키지). 두 파일의 scikit-learn, numpy 버전이 같아야 저장한 모델을 Lambda에서 불러올 수 있다.
+- 라이브러리 버전: [requirements.txt](requirements.txt)(파이프라인), [requirements-dev.txt](requirements-dev.txt)(테스트: pytest, moto), [requirements-lambda.txt](requirements-lambda.txt)(Lambda 패키지). requirements.txt와 requirements-lambda.txt의 scikit-learn, numpy 버전이 같아야 저장한 모델을 Lambda에서 불러올 수 있다.
 - 클라우드 단계: AWS 자격 증명을 로컬 프로필로 등록하고 [docs/iam/operator-policy.json](docs/iam/operator-policy.json) 범위의 권한을 준다. AWS CLI는 없어도 된다(boto3 사용).
 - 프로필을 지정하지 않으면 클라우드 단계는 AWS에 접속하기 전에 멈춘다. 기본 자격 증명으로 다른 계정에 배포하는 일을 막기 위해서다.
 - 로컬 단계와 테스트는 AWS 없이 실행된다.
@@ -106,7 +106,10 @@ cd cloud-mlops-bike-demand
 uv venv --python 3.12 --seed .venv        # 또는 python3.12 -m venv .venv
 .venv\Scripts\activate                    # macOS/Linux: source .venv/bin/activate
 python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 ```
+
+Windows에서는 저장소 경로가 길면(약 110자 이상) 경로 길이 제한 때문에 moto 설치가 실패한다. 짧은 경로(예: `C:\work`)에 받거나 Windows 긴 경로 지원을 켠다. moto가 없으면 모의 AWS 테스트는 건너뛰고 나머지 테스트와 파이프라인은 그대로 동작한다.
 
 ## 7. 실행과 검증
 
