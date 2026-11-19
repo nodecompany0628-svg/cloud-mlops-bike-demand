@@ -909,3 +909,34 @@ def test_status_record_does_not_make_user_bucket_adoptable(sandbox):
         except ClientError:
             tags = []
     assert rc_first == 1 and rc_second == 1 and left == ["bike-demand-mlops-users-own"] and tags == []
+
+
+def test_account_id_in_names_is_refused_before_anything_is_created(sandbox):
+    cfg = load_config()
+    cfg["cloud"]["bucket_prefix"] = f"bike-demand-mlops-{MOTO_ACCOUNT}"
+    with mock_aws():
+        rc = run_with(cfg, "deploy")
+        iam = boto3.client("iam", region_name="ap-northeast-2")
+        created = (boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
+                   + iam.list_roles()["Roles"] + iam.list_policies(Scope="Local")["Policies"])
+    error = records(sandbox)[-1]["error"]
+    assert rc == 1 and "계정 ID" in error and MOTO_ACCOUNT not in error and created == []
+
+
+def test_recorded_bucket_name_that_is_not_valid_is_ignored(sandbox):
+    runlog.RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"run_id": "x", "step": "status", "status": "success",
+                            "cloud": {"region": "ap-northeast-2", "bucket": "bike-demand-mlops-<ACCOUNT_ID>"}}) + "\n")
+    with mock_aws():
+        assert run(["status"]) == 0
+
+
+def test_deploy_refuses_while_run_log_has_unreadable_lines(sandbox):
+    runlog.RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
+        f.write('{"run_id": "cut"\n')
+    with mock_aws():
+        rc = run(["deploy"])
+        buckets = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
+    assert rc == 1 and "읽을 수 없는 줄" in records_tolerant(sandbox)[-1]["error"] and buckets == []

@@ -102,6 +102,11 @@ class Cloud:
         self.logs = self.session.client("logs")
         self.bucket_base = c["bucket_prefix"]
         self.configured = c.get("bucket")
+        with_account = [k for k in ("function_name", "role_name", "permissions_boundary", "bucket_prefix", "bucket")
+                        if self.account in str(c.get(k) or "")]
+        if with_account:
+            raise RuntimeError(f"config 의 cloud.{', cloud.'.join(with_account)} 에 AWS 계정 ID 가 들어 있습니다. 공개 기록에서는 "
+                               "계정 ID 를 가리므로 이 도구가 기록에서 이름을 다시 읽을 수 없습니다. 계정 ID 를 뺀 이름을 쓰세요")
         if self.configured and not self.configured.startswith(f"{self.bucket_base}-"):
             raise RuntimeError(f"cloud.bucket 은 {self.bucket_base}- 로 시작해야 합니다: {self.configured}")
         self.configured_region = self.bucket_region(self.configured) if self.configured else None
@@ -877,6 +882,9 @@ def step_deploy(ctx) -> None:
     ctx.add_input(mpath)
     ctx.add_input(zip_path)
     ctx.model = {"name": meta["name"], "version": meta["version"], "sha256": meta["model_sha256"]}
+    _, broken = read_run_log()
+    if broken:
+        raise RuntimeError(BROKEN_RUN_LOG.format(n=broken))
     renamed, _ = renamed_leftovers(cfg)
     if renamed:
         raise RuntimeError(RENAMED.format(names=renamed))
@@ -1102,7 +1110,10 @@ def recorded_buckets() -> set[str]:
         path = RESULTS / "cloud" / name
         if path.exists():
             names.add(load_json(path).get("cloud", {}).get("bucket"))
-    return {n for n in names if n}
+    return {n for n in names if isinstance(n, str) and BUCKET_NAME.fullmatch(n)}
+
+
+BUCKET_NAME = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 
 
 def _clouds(ctx) -> tuple[list[Cloud], list[dict]]:
