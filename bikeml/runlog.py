@@ -324,7 +324,14 @@ def print_runs(limit: int = 30) -> None:
     rows, _ = read_run_log()
     print(f"{'run_id':24} {'step':12} {'status':8} {'commit':8} {'model':8} {'finished_at':26} error")
     for r in rows[-limit:]:
-        commit = ((r.get("git") or {}).get("commit") or "")[:7]
-        model = (r.get("model") or {}).get("version") or ""
-        err = (r.get("error") or "")[:60]
-        print(f"{r['run_id']:24} {r['step']:12} {r['status']:8} {commit:8} {model:8} {r.get('finished_at') or '':26} {err}")
+        commit = _text(r, "git", "commit")[:7]
+        model = _text(r, "model", "version")
+        err = _text(r, "error")[:60]
+        print(f"{r['run_id']:24} {r['step']:12} {r['status']:8} {commit:8} {model:8} {_text(r, 'finished_at'):26} {err}")
+
+
+def _text(rec: dict, *keys) -> str:
+    value = rec
+    for key in keys:
+        value = value.get(key) if isinstance(value, dict) else None
+    return value if isinstance(value, str) else ""

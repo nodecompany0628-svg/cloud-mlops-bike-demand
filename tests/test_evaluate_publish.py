@@ -120,3 +120,14 @@ def test_no_matching_model_stops_evaluation(isolated):
     rec = [json.loads(x) for x in (root / "runs" / "run_log.jsonl").read_text(encoding="utf-8").splitlines()][-1]
     assert "train" in rec["error"] and "학습 자료" in rec["error"] and "특성 코드" in rec["error"]
     assert not (root / "results" / "evaluation" / "metrics.json").exists()
+
+
+def test_candidate_with_wrong_sha_falls_back_to_published_model(isolated):
+    root, published, candidate = isolated
+    shutil.copy2(GOOD_MODEL / "model.joblib", candidate / "model.joblib")
+    meta = json.loads((GOOD_MODEL / "metadata.json").read_text(encoding="utf-8"))
+    (candidate / "metadata.json").write_text(json.dumps({**meta, "model_sha256": "0" * 64}), encoding="utf-8")
+
+    assert run_evaluate() == 0
+    metrics = json.loads((root / "results" / "evaluation" / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["model_source"] == "published"

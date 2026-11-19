@@ -91,7 +91,7 @@
 | 알고리즘 | scikit-learn `HistGradientBoostingRegressor` (그래디언트 부스팅 트리) |
 | 손실 | 포아송. 대여 건수는 0 이상의 셈 값이라 이 손실을 쓰고, 예측도 0 이상이 된다 |
 | 하이퍼파라미터 | learning_rate 0.05, max_iter 500, max_leaf_nodes 31, min_samples_leaf 20, early_stopping 끔, random_state 42 |
-| 버전 이름 | `hgb-v1` ([models/hgb-v1/](../models/hgb-v1/)). `train`은 후보 모델을 `models/_candidate/hgb-v1/`(Git 제외)에 만들고, `evaluate`가 합격 기준을 통과시킨 경우에만 `models/hgb-v1/`로 복사한다. 그래서 평가에 떨어진 모델이 합격한 모델을 덮지 않는다. `evaluate`는 먼저 정리한 자료가 설정의 분할 기간과 맞는지 보고(다르면 `prepare`를 다시 하라고 멈춘다), 평가할 모델의 학습 자료 sha256, 하이퍼파라미터(메타데이터와 모델 파일 모두), 버전, 특성 목록과 특성 코드(`bikeml/features.py`) sha256이 지금과 같은지 확인한다. 후보 모델이 맞지 않으면 반영된 모델을 보고, 둘 다 맞지 않으면 `train`을 다시 하라고 멈춘다 |
+| 버전 이름 | `hgb-v1` ([models/hgb-v1/](../models/hgb-v1/)). `train`은 후보 모델을 `models/_candidate/hgb-v1/`(Git 제외)에 만들고, `evaluate`가 합격 기준을 통과시킨 경우에만 `models/hgb-v1/`로 복사한다. 그래서 평가에 떨어진 모델이 합격한 모델을 덮지 않는다. `evaluate`는 먼저 정리한 자료가 설정의 분할 기간과 맞는지 보고(다르면 `prepare`를 다시 하라고 멈춘다), 평가할 모델의 학습 자료 sha256, 하이퍼파라미터(메타데이터와 모델 파일 모두), 버전, 특성 목록과 특성 코드(`bikeml/features.py`) sha256이 지금과 같은지 확인한다. 후보 모델이 맞지 않거나 모델 파일의 sha256이 메타데이터와 다르면 반영된 모델을 보고, 둘 다 맞지 않으면 `train`을 다시 하라고 멈춘다 |
 | 파일 | `model.joblib` (joblib 압축 3, 0.7MB), sha256 `f6186c0a881176ccb676683346571a8fa1c5fc52aa0a4cfd0c6768d241bfded0` |
 | 메타데이터 | [models/hgb-v1/metadata.json](../models/hgb-v1/metadata.json): 학습 자료 sha256과 기간, 특성 목록과 특성 코드 sha256, 라이브러리 버전, 학습 시간, 학습 MAE(17.66) |
 | 재현성 | 그래디언트 부스팅은 여러 스레드로 기울기를 더하므로 스레드 수가 다르면 부동소수점 합의 순서가 달라져 파일이 바이트 단위로 달라진다. 그래서 학습 스레드를 1개로 고정했다(`model.train_threads`, 메타데이터에도 기록). 그 뒤 학습한 기록은 모두 `f6186c0a...`이다. 스레드를 고정하기 전 12스레드로 학습한 기록(`9911f56a...`)도 실행 기록에 남아 있으며, 지표는 소수 둘째 자리까지 같았다. 다른 OS나 CPU에서는 부동소수점 처리 차이로 sha256이 달라질 수 있어, 다른 PC에서 다시 실행할 때는 지표로 비교한다 |

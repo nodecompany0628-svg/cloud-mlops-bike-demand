@@ -641,9 +641,6 @@ class Cloud:
 
             tags = {t["Key"]: t["Value"] for t in self.iam.list_policy_tags(PolicyArn=self.boundary_arn())["Tags"]}
             self.require_ours(f"권한 경계 정책 {self.boundary_name}", tags)
-            for v in self.iam.list_policy_versions(PolicyArn=self.boundary_arn())["Versions"]:
-                if not v["IsDefaultVersion"]:
-                    self.iam.delete_policy_version(PolicyArn=self.boundary_arn(), VersionId=v["VersionId"])
             for attempt in range(1, STATUS_RETRIES + 1):
                 try:
                     self.iam.delete_policy(PolicyArn=self.boundary_arn())
@@ -651,6 +648,10 @@ class Cloud:
                 except ClientError as e:
                     if _code(e) != "DeleteConflict" or attempt == STATUS_RETRIES:
                         raise
+                if attempt == 1:
+                    for v in self.iam.list_policy_versions(PolicyArn=self.boundary_arn())["Versions"]:
+                        if not v["IsDefaultVersion"]:
+                            self.iam.delete_policy_version(PolicyArn=self.boundary_arn(), VersionId=v["VersionId"])
                 time.sleep(STATUS_WAIT_S)
 
         self._delete(f"iam-policy:{self.boundary_name}", del_boundary, done)
@@ -1129,7 +1130,7 @@ def step_status(ctx) -> None:
     print(json.dumps(ctx.summary, ensure_ascii=False))
     if broken:
         raise RuntimeError(BROKEN_RUN_LOG.format(n=broken))
-    if not status_complete(resources, unreachable):
+    if not status_complete(resources, unreachable) or st["permissions_boundary"].get("exists") is None:
         raise RuntimeError("일부 자원이나 리전의 상태를 확인하지 못했습니다. 결과 파일의 regions_unreachable, exists=null 항목을 보세요")
 
 

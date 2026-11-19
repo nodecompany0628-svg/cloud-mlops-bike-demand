@@ -48,7 +48,8 @@ def load_model(cfg):
         path = mdir / "model.joblib"
         sha = sha256_file(path)
         if sha != meta["model_sha256"]:
-            raise ValueError(f"모델 파일 sha256 이 metadata 와 다릅니다 ({sha[:12]}... != {meta['model_sha256'][:12]}...)")
+            tried.append(f"{source}: 모델 파일 sha256 이 metadata 와 다름({sha[:12]}... != {meta['model_sha256'][:12]}...)")
+            continue
         model = joblib.load(path)
         if estimator_mismatch(model, cfg):
             tried.append(f"{source}: 모델 파일의 하이퍼파라미터")

@@ -639,7 +639,7 @@ def test_boundary_kept_when_operator_cannot_delete_policies(sandbox, monkeypatch
             if name == "iam":
                 def denied(**kwargs):
                     raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "DeletePolicy")
-                c.delete_policy = denied
+                c.delete_policy = c.list_policy_versions = c.delete_policy_version = denied
             return c
         monkeypatch.setattr(boto3.Session, "client", client)
         rc = run(["cleanup"])
@@ -756,9 +756,41 @@ def test_boundary_with_extra_versions_is_deleted(sandbox, monkeypatch):
         arn = next(p["Arn"] for p in iam.list_policies(Scope="Local")["Policies"])
         iam.create_policy_version(PolicyArn=arn, PolicyDocument=json.dumps(
             cloud.boundary_document("bike-demand-mlops", "bike-demand-predict")), SetAsDefault=True)
+        real_client = boto3.Session.client
+
+        def client(self, name, *a, **kw):
+            c = real_client(self, name, *a, **kw)
+            if name == "iam":
+                real_delete = c.delete_policy
+
+                def delete_policy(**kwargs):
+                    if len(c.list_policy_versions(PolicyArn=kwargs["PolicyArn"])["Versions"]) > 1:
+                        raise ClientError({"Error": {"Code": "DeleteConflict", "Message": "versions"}}, "DeletePolicy")
+                    return real_delete(**kwargs)
+                c.delete_policy = delete_policy
+            return c
+        monkeypatch.setattr(boto3.Session, "client", client)
         rc = run(["cleanup"])
         policies = iam.list_policies(Scope="Local")["Policies"]
     assert rc == 0 and policies == []
+
+
+def test_status_fails_when_boundary_state_is_unknown(sandbox, monkeypatch):
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        real_client = boto3.Session.client
+
+        def client(self, name, *a, **kw):
+            c = real_client(self, name, *a, **kw)
+            if name == "iam":
+                def denied(**kwargs):
+                    raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "ListPolicyTags")
+                c.list_policy_tags = denied
+            return c
+        monkeypatch.setattr(boto3.Session, "client", client)
+        rc = run(["status"])
+    status = failed_result(sandbox, records(sandbox)[-1], "results/cloud/status.json")
+    assert rc == 1 and status["permissions_boundary"] == {"exists": None, "error": "AccessDenied"}
 
 
 def test_status_records_unknown_role_state(sandbox, monkeypatch):
