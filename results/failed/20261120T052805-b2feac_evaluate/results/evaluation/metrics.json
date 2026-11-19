@@ -1,0 +1,100 @@
+{
+  "model": {
+    "name": "bike-hgb",
+    "version": "hgb-v1",
+    "sha256": "f6186c0a881176ccb676683346571a8fa1c5fc52aa0a4cfd0c6768d241bfded0"
+  },
+  "model_source": "candidate",
+  "models_not_used": [],
+  "eval_data": {
+    "path": "data/processed/test.csv",
+    "sha256": "e634352180e336bcd3fbd1d819e624dd8e9ff5b2598681a594d21fa4b69691ba",
+    "rows": 2888,
+    "excluded_missing_humidity": 0,
+    "first": "2012-09-01T00:00",
+    "last": "2012-12-31T23:00",
+    "actual_mean": 240.23
+  },
+  "unit": "대/시간 (daily_total_mae 는 대/일)",
+  "metrics": {
+    "model": {
+      "n": 2888,
+      "mae": 47.53,
+      "rmse": 72.95,
+      "bias": -25.32,
+      "daily_total_mae": 902.1,
+      "excluding_sandy": {
+        "n": 2876,
+        "mae": 47.42,
+        "rmse": 72.74,
+        "bias": -25.62
+      }
+    },
+    "baseline_mean": {
+      "n": 2888,
+      "mae": 170.51,
+      "rmse": 226.03,
+      "bias": -60.89,
+      "daily_total_mae": 2047.0,
+      "excluding_sandy": {
+        "n": 2876,
+        "mae": 170.86,
+        "rmse": 226.42,
+        "bias": -61.5
+      }
+    },
+    "baseline_hour_mean": {
+      "n": 2888,
+      "mae": 94.78,
+      "rmse": 138.53,
+      "bias": -61.79,
+      "daily_total_mae": 2058.6,
+      "excluding_sandy": {
+        "n": 2876,
+        "mae": 94.59,
+        "rmse": 138.34,
+        "bias": -62.63
+      }
+    }
+  },
+  "by_month": [
+    {
+      "m": "2012-09",
+      "n": 720,
+      "actual_mean": 303.6,
+      "mae_model": 38.93,
+      "mae_hour_baseline": 131.82
+    },
+    {
+      "m": "2012-10",
+      "n": 708,
+      "actual_mean": 280.8,
+      "mae_model": 50.17,
+      "mae_hour_baseline": 115.75
+    },
+    {
+      "m": "2012-11",
+      "n": 718,
+      "actual_mean": 212.6,
+      "mae_model": 47.85,
+      "mae_hour_baseline": 62.25
+    },
+    {
+      "m": "2012-12",
+      "n": 742,
+      "actual_mean": 166.7,
+      "mae_model": 53.04,
+      "mae_hour_baseline": 70.31
+    }
+  ],
+  "criteria": {
+    "must_beat_all_baselines": true,
+    "min_mae_reduction_vs_hour_baseline": 0.9
+  },
+  "checks": {
+    "beats_all_baselines": true,
+    "mae_reduction_vs_hour_baseline": 0.499,
+    "meets_reduction": false
+  },
+  "passed": false
+}
