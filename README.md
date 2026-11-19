@@ -39,23 +39,23 @@
 
 ## 2. 구성
 
-```
-python -m bikeml run local   fetch, prepare, train, evaluate, check-local
-python -m bikeml run cloud   package, deploy, smoke, cloud-eval
-python -m bikeml run all     local 과 cloud 를 이어서 실행
-python -m bikeml status      AWS 자원 상태 조회
-python -m bikeml cleanup     AWS 자원 삭제 후 다시 조회
-```
+| 명령 | 하는 일 |
+|---|---|
+| `python -m bikeml run local` | fetch, prepare, train, evaluate, check-local |
+| `python -m bikeml run cloud` | package, deploy, smoke, cloud-eval |
+| `python -m bikeml run all` | local과 cloud를 이어서 실행 |
+| `python -m bikeml status` | AWS 자원 상태 조회 |
+| `python -m bikeml cleanup` | AWS 자원 삭제 후 다시 조회 |
 
 | 단계 | 하는 일 |
 |---|---|
 | fetch | UCI에서 원자료를 받고 sha256 확인 (이미 있으면 확인만) |
 | prepare | 원자료 점검, 단위 변환, 결측 처리, 시간 순서 분할 |
 | train | 모델 학습. 결과는 후보 폴더 `models/_candidate/`에 둔다 |
-| evaluate | 기준 방법과 비교, 합격 기준 확인. 합격하면 후보 모델을 `models/hgb-v1/`로 옮기고, 불합격이면 멈춘다 |
+| evaluate | 평가할 모델이 지금 학습 자료와 설정으로 학습됐는지 확인한 뒤 기준 방법과 비교하고 합격 기준을 본다. 합격하면 후보 모델을 `models/hgb-v1/`로 복사하고, 불합격이면 멈춘다 |
 | check-local | 서비스 검사 사례 12개를 Lambda 핸들러에 로컬로 보냄 |
 | package | 리눅스용 라이브러리로 Lambda zip 빌드 |
-| deploy | 평가와 검사가 현재 모델, 기준, 코드로 통과했는지와 zip이 현재 코드로 만든 것인지 확인한 뒤 S3, IAM 역할, 로그 그룹, Lambda 함수를 만들고 버전 게시 |
+| deploy | 배포 전 확인(모델, 학습 자료, 평가, 검사, zip, 런타임과 아키텍처)을 한 뒤 S3, IAM 역할, 로그 그룹, Lambda 함수를 만들고 버전 게시 |
 | smoke | 같은 검사 사례 12개를 Lambda에 보내고, 모두 통과하면 그 버전에 `live` 별칭을 붙임 |
 | cloud-eval | 평가 자료 2,888건을 Lambda로 예측해 로컬 결과와 비교 |
 
@@ -80,7 +80,7 @@ python -m bikeml cleanup     AWS 자원 삭제 후 다시 조회
 | 기준 방법 MAE | 시간대 평균 94.78, 전체 평균 170.51 대/시간. 시간대 평균보다 49.9% 낮아 합격 | 같은 파일 |
 | 서비스 검사 (로컬 핸들러) | 12/12 통과 | [results/service_check/local.json](results/service_check/local.json) |
 | 실패 처리 예시 | 합격 기준을 90%로 올린 설정에서 evaluate 실패, check-local 건너뜀, 정상 결과는 그대로 | [results/failed/](results/failed/), [runs/run_log.jsonl](runs/run_log.jsonl) |
-| 테스트 | 64개 통과 | `python -m pytest -q` |
+| 테스트 | 70개 통과 | `python -m pytest -q` |
 | Lambda 패키지 | zip 64.29MB, 압축 해제 198.94MB (한도 250MB) | [results/cloud/package.json](results/cloud/package.json) |
 | 실제 AWS 실행 | 실행 전 | [docs/cloud.md](docs/cloud.md) |
 
@@ -90,7 +90,7 @@ python -m bikeml cleanup     AWS 자원 삭제 후 다시 조회
 - 확인한 환경: Windows 11, Python 3.12.13, pip 26.3, uv 0.11.16
 - 라이브러리 버전: [requirements.txt](requirements.txt)(파이프라인), [requirements-dev.txt](requirements-dev.txt)(테스트: pytest, moto), [requirements-lambda.txt](requirements-lambda.txt)(Lambda 패키지). requirements.txt와 requirements-lambda.txt의 scikit-learn, numpy 버전이 같아야 저장한 모델을 Lambda에서 불러올 수 있다.
 - 클라우드 단계: AWS 자격 증명을 로컬 프로필로 등록하고 [docs/iam/operator-policy.json](docs/iam/operator-policy.json) 범위의 권한을 준다. AWS CLI는 없어도 된다(boto3 사용).
-- 프로필을 지정하지 않으면 클라우드 단계는 AWS에 접속하기 전에 멈춘다. 기본 자격 증명으로 다른 계정에 배포하는 일을 막기 위해서다. 환경 변수의 키(`AWS_ACCESS_KEY_ID` 등)를 쓰려면 `BIKEML_USE_ENV_CREDENTIALS=1`도 함께 지정해야 한다.
+- 프로필을 지정하지 않으면 클라우드 단계는 AWS에 접속하기 전에 멈춘다. 기본 자격 증명으로 다른 계정에 배포하는 일을 막기 위해서다. 환경 변수의 키(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)를 쓰려면 `BIKEML_USE_ENV_CREDENTIALS=1`도 함께 지정해야 하고, 이때는 환경 변수의 키만 쓴다(없으면 멈춘다).
 - 로컬 단계와 테스트는 AWS 없이 실행된다.
 
 ## 5. 자원 준비와 설정
@@ -141,11 +141,11 @@ python -m bikeml runs
 ```
 
 - 전체 옵션 `--config`, `--profile`, `--region`, `--lambda-config`는 `run`, `status`, `cleanup`, `runs` 앞에 쓴다.
-- `status`, `cleanup`은 마지막으로 배포한 리전(`results/cloud/deploy.json`)과 다른 리전으로 실행하면 멈춘다. 다른 리전에 배포했다면 같은 `--region`을 붙인다.
+- `status`, `cleanup`은 지금 리전뿐 아니라 이 PC에서 배포를 시작했던 모든 리전(`.state/regions.json`, Git 제외)과 배포 기록에 적힌 리전을 함께 조회하고 정리한다.
 - 단계 하나씩도 실행할 수 있다: `python -m bikeml run evaluate`, `python -m bikeml --profile mlops run deploy smoke`
 - 한 단계가 실패하면 뒤 단계는 실행하지 않고, 실패한 결과는 `results/failed/<run_id>_<단계>/`에 따로 남는다. 실행 중 Ctrl+C로 멈춰도 그 단계는 실패로 기록된다.
 - 실패 처리 예시 재현: `python -m bikeml --config config/demo_strict_criteria.json run evaluate check-local`
-- `deploy`는 현재 모델과 합격 기준, 평가 자료로 `evaluate`를 통과했고, 현재 Lambda 코드로 `check-local`을 통과했으며, zip이 현재 코드로 만든 것일 때만 진행한다.
+- `deploy`는 모델이 지금 학습 자료와 설정으로 학습됐고, 지금 합격 기준과 평가 자료로 `evaluate`를 통과했고, 지금 Lambda 코드로 `check-local`을 통과했으며, zip이 지금 코드와 런타임, 아키텍처로 만든 것일 때만 진행한다.
 
 AWS CLI로 직접 호출하는 방법. 검사를 통과한 버전을 가리키는 `live` 별칭으로 부른다.
 

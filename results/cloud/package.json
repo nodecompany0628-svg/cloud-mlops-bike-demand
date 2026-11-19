@@ -6,6 +6,7 @@
   "removed_test_dirs_mb": 30.06,
   "file_count": 3516,
   "runtime": "python3.12",
+  "architecture": "x86_64",
   "precompiled_pyc": true,
   "platforms": [
     "manylinux_2_28_x86_64",
