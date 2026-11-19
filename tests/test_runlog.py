@@ -185,3 +185,15 @@ def test_home_path_redaction_stops_at_folder_boundary():
     home = str(Path.home())
     assert runlog.sanitize(home + "\\a.txt", []) == "~\\a.txt"
     assert runlog.sanitize(home + "x\\a.txt", []).startswith(home + "x")
+
+
+def test_data_files_are_not_rewritten(isolated):
+    text = str(Path.home()) + " stays as is"
+
+    def step(ctx):
+        ctx.out("data/raw/x.csv").write_text(text, encoding="utf-8")
+        ctx.out("results/y.txt").write_text(text, encoding="utf-8")
+
+    assert run(["step"], {"step": step}) == 0
+    assert (isolated / "data" / "raw" / "x.csv").read_text(encoding="utf-8") == text
+    assert (isolated / "results" / "y.txt").read_text(encoding="utf-8").startswith("~")

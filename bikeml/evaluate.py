@@ -71,16 +71,15 @@ def baselines(train: pd.DataFrame, X_train: np.ndarray, X_test: np.ndarray) -> d
 def step_evaluate(ctx) -> None:
     cfg = ctx.cfg
     pdir = ROOT / cfg["data"]["processed_dir"]
-    model, meta, mpath, source = load_model(cfg)
-    ctx.model = {"name": meta["name"], "version": meta["version"], "sha256": meta["model_sha256"]}
-    for p in (pdir / "train.csv", pdir / "test.csv", mpath):
-        ctx.add_input(p)
-
     train = pd.read_csv(pdir / "train.csv")
     test = pd.read_csv(pdir / "test.csv")
     bad = split_problems(cfg, train, test)
     if bad:
         raise RuntimeError(f"{', '.join(bad)}이 config 의 split 과 다릅니다. prepare 를 먼저 실행하세요")
+    model, meta, mpath, source = load_model(cfg)
+    ctx.model = {"name": meta["name"], "version": meta["version"], "sha256": meta["model_sha256"]}
+    for p in (pdir / "train.csv", pdir / "test.csv", mpath):
+        ctx.add_input(p)
     test, excluded = evaluation_rows(test)
     X_train = np.asarray(feature_matrix(train), dtype=float)
     X_test = np.asarray(feature_matrix(test, allow_missing_humidity=False), dtype=float)

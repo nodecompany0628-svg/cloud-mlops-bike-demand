@@ -206,7 +206,8 @@ class Cloud:
 
     def leftover_bucket(self, tags: dict) -> bool:
         named = re.fullmatch(re.escape(self.bucket_prefix) + "[0-9a-f]{8}", self.bucket)
-        return not tags and (bool(named) or self.bucket == self.configured) and self.bucket_is_empty()
+        recorded = self.bucket == self.configured and self.bucket in recorded_buckets()
+        return not tags and (bool(named) or recorded) and self.bucket_is_empty()
 
     def tag_bucket(self) -> None:
         self.s3.put_bucket_tagging(Bucket=self.bucket, Tagging={
@@ -587,6 +588,8 @@ class Cloud:
             self.iam.delete_policy(PolicyArn=self.boundary_arn())
 
         self._delete(f"iam-policy:{self.boundary_name}", del_boundary, done)
+        if done[-1]["result"] in ("error: AccessDenied", "error: AccessDeniedException"):
+            done[-1]["result"] = "kept: 운영자 권한에는 정책 삭제 권한이 없음(관리자가 지움)"
         return done
 
 
@@ -740,7 +743,7 @@ def deploy_preflight(cfg: dict, lambda_cfg: dict) -> dict:
     )
     if problems:
         raise RuntimeError("배포 전 확인 실패: " + "; ".join(problems)
-                           + ". python -m bikeml run local package 를 먼저 실행하세요")
+                           + ". 해당 단계를 지금 설정으로 다시 실행하세요(대개 python -m bikeml run local package)")
     return {"meta": meta, "zip_sha256": pkg["zip_sha256"], "zip_path": zip_path}
 
 
@@ -765,6 +768,7 @@ def step_deploy(ctx) -> None:
     ctx.cloud = cloud.info()
     res["permissions_boundary"] = cloud.ensure_boundary()
     res["role"] = cloud.ensure_role()
+    ctx.state["role_created"] = res["role"] == "created"
     res["log_group"] = cloud.ensure_log_group(lcfg["log_retention_days"])
 
     prefix = cloud.model_prefix(meta["model_sha256"])
@@ -835,7 +839,7 @@ def step_smoke(ctx) -> None:
     ctx.add_input(ROOT / "samples" / "service_cases.json")
     identity = cloud.version_identity(version)
     ctx.cloud = {**ctx.cloud, "identity": identity}
-    readiness = wait_until_ready(invoke)
+    readiness = wait_until_ready(invoke) if ctx.state.get("role_created") else {"skipped": True}
     report = run_cases(invoke, expected, f"lambda:{cloud.fn}:{version}", ctx.cfg, ctx.secrets)
     report["readiness"] = readiness
     day = sample_day_comparison(report.pop("responses"), ctx.cfg)
@@ -874,7 +878,13 @@ def step_cloud_eval(ctx) -> None:
     preds, calls = [], []
     for start in range(0, len(recs), size):
         batch = recs[start:start + size]
-        resp, meta = sanitize(invoke({"instances": batch}), ctx.secrets)
+        try:
+            resp, meta = sanitize(invoke({"instances": batch}), ctx.secrets)
+        except Exception as e:
+            calls.append({"rows": f"{start}-{start + len(batch) - 1}", "status": None,
+                          "error": sanitize(f"{type(e).__name__}: {e}", ctx.secrets)})
+            write_json(ctx.out("results/cloud/cloud_eval_calls.json"), calls)
+            raise
         calls.append({"rows": f"{start}-{start + len(batch) - 1}", "status": resp.get("statusCode"), **meta})
         body = resp.get("body") or {}
         problem = None

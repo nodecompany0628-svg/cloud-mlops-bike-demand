@@ -145,6 +145,8 @@ TEXT_SUFFIXES = {".json", ".jsonl", ".txt", ".csv", ".md"}
 def _scrub(stage: Path, secrets: list[str]) -> list[str]:
     unreadable = []
     for f in sorted(stage.rglob("*")):
+        if f.relative_to(stage).parts[:1] == ("data",):
+            continue
         if f.is_file() and f.suffix in TEXT_SUFFIXES:
             try:
                 text = f.read_bytes().decode("utf-8")

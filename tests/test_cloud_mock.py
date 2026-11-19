@@ -536,6 +536,10 @@ def test_existing_role_without_boundary_is_refused(sandbox):
 def test_configured_bucket_left_untagged_is_adopted(sandbox):
     cfg = load_config()
     cfg["cloud"]["bucket"] = "bike-demand-mlops-mine"
+    runlog.RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"run_id": "x", "step": "deploy", "status": "failed",
+                            "cloud": {"region": "ap-northeast-2", "bucket": "bike-demand-mlops-mine"}}) + "\n")
     with mock_aws():
         boto3.client("s3", region_name="ap-northeast-2").create_bucket(
             Bucket="bike-demand-mlops-mine", CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"})
@@ -555,11 +559,13 @@ def test_smoke_waits_for_model_permission(sandbox, monkeypatch):
                 "code": "MODEL_LOAD_FAILED", "message": "An error occurred (403) when calling HeadObject: Forbidden"}}}, {}
         return local_invoke(self, payload, qualifier)
     with mock_aws():
-        assert run(["deploy"]) == 0
         monkeypatch.setattr(cloud.Cloud, "invoke", flaky)
-        assert run(["smoke"]) == 0
-    smoke = read(sandbox, "results/service_check/cloud.json")
-    assert smoke["readiness"]["attempts"] == 2 and smoke["readiness"]["waited_for_permissions"] is True
+        assert run(["deploy", "smoke"]) == 0
+        smoke = read(sandbox, "results/service_check/cloud.json")
+        assert smoke["readiness"]["attempts"] == 2 and smoke["readiness"]["waited_for_permissions"] is True
+        calls["n"] = 0
+        assert run(["smoke"]) == 1
+    assert read(sandbox, "results/service_check/cloud.json")["readiness"]["attempts"] == 2
 
 
 def test_status_fails_when_own_region_unreachable(sandbox, monkeypatch):
@@ -575,3 +581,48 @@ def test_status_fails_when_own_region_unreachable(sandbox, monkeypatch):
         rc = run(["status"])
     recs = records(sandbox)
     assert rc == 1 and "확인하지 못했습니다" in recs[-1]["error"]
+
+
+def test_untagged_configured_bucket_without_record_is_refused(sandbox):
+    cfg = load_config()
+    cfg["cloud"]["bucket"] = "bike-demand-mlops-users-own"
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="ap-northeast-2")
+        s3.create_bucket(Bucket="bike-demand-mlops-users-own",
+                         CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"})
+        rc = runlog.run_steps(["deploy"], STEPS, cfg, make_args(steps=["deploy"]), DEFAULT_CONFIG)
+        left = [b["Name"] for b in s3.list_buckets()["Buckets"]]
+    assert rc == 1 and "태그" in records(sandbox)[-1]["error"] and left == ["bike-demand-mlops-users-own"]
+
+
+def test_cloud_eval_records_calls_when_invoke_raises(sandbox, monkeypatch):
+    with mock_aws():
+        assert run(["deploy"]) == 0
+
+        def boom(self, payload, qualifier):
+            raise RuntimeError("read timeout")
+        monkeypatch.setattr(cloud.Cloud, "invoke", boom)
+        assert run(["cloud-eval"]) == 1
+    rid = records(sandbox)[-1]["run_id"]
+    calls = json.loads((sandbox / "failed" / f"{rid}_cloud-eval" / "results" / "cloud" / "cloud_eval_calls.json")
+                       .read_text(encoding="utf-8"))
+    assert calls[0]["status"] is None and "read timeout" in calls[0]["error"]
+
+
+def test_boundary_kept_when_operator_cannot_delete_policies(sandbox, monkeypatch):
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        real_client = boto3.Session.client
+
+        def client(self, name, *a, **kw):
+            c = real_client(self, name, *a, **kw)
+            if name == "iam":
+                def denied(**kwargs):
+                    raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "DeletePolicy")
+                c.delete_policy = denied
+            return c
+        monkeypatch.setattr(boto3.Session, "client", client)
+        rc = run(["cleanup"])
+    clean = read(sandbox, "results/cloud/cleanup.json")
+    action = next(a for a in clean["actions"] if a["resource"].startswith("iam-policy:"))
+    assert rc == 0 and clean["all_gone"] and action["result"].startswith("kept")
