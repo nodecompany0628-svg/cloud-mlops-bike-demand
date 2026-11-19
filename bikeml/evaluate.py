@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import joblib
 import numpy as np
 import pandas as pd
 
-from .common import ROOT, load_json, model_dir, sha256_file, write_json
+from .common import ROOT, candidate_dir, load_json, model_dir, sha256_file, write_json
 from .data import TARGET, feature_matrix
 from .features import FEATURES
 
@@ -28,14 +30,21 @@ def daily_mae(dt: pd.Series, y_true, y_pred) -> float:
     return round(float(np.mean(np.abs(d.p - d.y))), 1)
 
 
+def model_source(cfg) -> tuple[Path, str]:
+    cand = candidate_dir(cfg)
+    if (cand / "model.joblib").exists() and (cand / "metadata.json").exists():
+        return cand, "candidate"
+    return model_dir(cfg), "published"
+
+
 def load_model(cfg):
-    mdir = model_dir(cfg)
+    mdir, source = model_source(cfg)
     meta = load_json(mdir / "metadata.json")
     path = mdir / "model.joblib"
     sha = sha256_file(path)
     if sha != meta["model_sha256"]:
         raise ValueError(f"모델 파일 sha256 이 metadata 와 다릅니다 ({sha[:12]}... != {meta['model_sha256'][:12]}...)")
-    return joblib.load(path), meta, path
+    return joblib.load(path), meta, path, source
 
 
 def baselines(train: pd.DataFrame, X_train: np.ndarray, X_test: np.ndarray) -> dict:
@@ -52,7 +61,7 @@ def baselines(train: pd.DataFrame, X_train: np.ndarray, X_test: np.ndarray) -> d
 def step_evaluate(ctx) -> None:
     cfg = ctx.cfg
     pdir = ROOT / cfg["data"]["processed_dir"]
-    model, meta, mpath = load_model(cfg)
+    model, meta, mpath, source = load_model(cfg)
     ctx.model = {"name": meta["name"], "version": meta["version"], "sha256": meta["model_sha256"]}
     for p in (pdir / "train.csv", pdir / "test.csv", mpath):
         ctx.add_input(p)
@@ -117,6 +126,7 @@ def step_evaluate(ctx) -> None:
 
     report = {
         "model": ctx.model,
+        "model_source": source,
         "eval_data": {"path": "data/processed/test.csv", "sha256": sha256_file(pdir / "test.csv"),
                       "rows": int(len(test)),
                       "first": test.datetime.min(), "last": test.datetime.max(),
@@ -130,6 +140,10 @@ def step_evaluate(ctx) -> None:
     }
     write_json(ctx.out("results/evaluation/metrics.json"), report)
     ctx.summary = {"model_mae": mae, "baseline_hour_mean_mae": result["baseline_hour_mean"]["mae"],
-                   "baseline_mean_mae": result["baseline_mean"]["mae"], "passed": bool(passed)}
+                   "baseline_mean_mae": result["baseline_mean"]["mae"], "passed": bool(passed),
+                   "model_source": source}
     if not passed:
         raise RuntimeError(f"합격 기준 미달: {checks}")
+    published = f"models/{cfg['model']['version']}"
+    ctx.out(f"{published}/model.joblib").write_bytes(mpath.read_bytes())
+    ctx.out(f"{published}/metadata.json").write_bytes((mpath.parent / "metadata.json").read_bytes())

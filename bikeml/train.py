@@ -8,7 +8,7 @@ import pandas as pd
 import sklearn
 from sklearn.ensemble import HistGradientBoostingRegressor
 
-from .common import ROOT, model_dir, rel, sha256_file, write_json
+from .common import ROOT, rel, sha256_file, write_json
 from .data import TARGET, feature_matrix
 from .features import FEATURES
 from .runlog import now_iso
@@ -34,7 +34,7 @@ def step_train(ctx) -> None:
     fit_s = time.perf_counter() - t0
     train_mae = float(np.mean(np.abs(model.predict(X) - y)))
 
-    mdir = rel(model_dir(cfg))
+    mdir = f"models/_candidate/{mcfg['version']}"
     model_path = ctx.out(f"{mdir}/model.joblib")
     joblib.dump(model, model_path, compress=3)
     sha = sha256_file(model_path)

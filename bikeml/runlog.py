@@ -151,7 +151,7 @@ def _promote(stage: Path) -> None:
                 os.replace(dst, backup)
             done.append((dst, backup))
             shutil.copy2(src, dst)
-    except Exception:
+    except BaseException:
         for dst, backup in reversed(done):
             if dst.exists():
                 dst.unlink()

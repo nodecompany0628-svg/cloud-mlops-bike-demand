@@ -46,6 +46,10 @@ def model_dir(cfg: dict) -> Path:
     return ROOT / "models" / cfg["model"]["version"]
 
 
+def candidate_dir(cfg: dict) -> Path:
+    return ROOT / "models" / "_candidate" / cfg["model"]["version"]
+
+
 def resolve_profile(cfg: dict, cli_profile: str | None) -> str | None:
     return cli_profile or os.environ.get("AWS_PROFILE") or cfg["cloud"].get("profile")
 

@@ -65,6 +65,8 @@ def main(argv=None) -> int:
     rl.add_argument("-n", type=int, default=30)
 
     args = p.parse_args(argv)
+    if args.lambda_config:
+        args.lambda_config = str(Path(args.lambda_config).resolve())
     if args.cmd == "runs":
         print_runs(args.n)
         return 0

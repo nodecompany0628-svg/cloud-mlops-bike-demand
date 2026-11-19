@@ -115,3 +115,25 @@ def test_interrupt_is_recorded_and_stops(isolated):
     assert run(["stop", "after"], {"stop": stop, "after": lambda ctx: None}) == 130
     r = recs(isolated)
     assert [x["status"] for x in r] == ["failed", "skipped"] and "KeyboardInterrupt" in r[0]["error"]
+
+
+def test_promote_rolls_back_on_interrupt(isolated, monkeypatch):
+    (isolated / "results").mkdir(parents=True, exist_ok=True)
+    for name in ("a.txt", "b.txt"):
+        (isolated / "results" / name).write_text("old", encoding="utf-8")
+    real_copy = runlog.shutil.copy2
+
+    def copy(src, dst):
+        if Path(dst).name == "b.txt":
+            raise KeyboardInterrupt
+        return real_copy(src, dst)
+    monkeypatch.setattr(runlog.shutil, "copy2", copy)
+
+    def step(ctx):
+        ctx.out("results/a.txt").write_text("new", encoding="utf-8")
+        ctx.out("results/b.txt").write_text("new", encoding="utf-8")
+
+    assert run(["step"], {"step": step}) == 130
+    for name in ("a.txt", "b.txt"):
+        assert (isolated / "results" / name).read_text(encoding="utf-8") == "old"
+    assert not list((isolated / "results").glob("*.promote-bak"))

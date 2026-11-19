@@ -30,6 +30,9 @@ LAMBDA_TRUST = {
 NOT_FOUND = {"404", "NoSuchBucket", "NotFound", "ResourceNotFoundException", "NoSuchEntity"}
 STATUS_RETRIES = 10
 STATUS_WAIT_S = 3
+UPLOAD_RETRIES = 20
+UPLOAD_WAIT_S = 30
+ALIAS = "live"
 
 
 def _code(e) -> str:
@@ -63,7 +66,10 @@ class Cloud:
         self.iam = self.session.client("iam")
         self.lam = self.session.client("lambda")
         self.logs = self.session.client("logs")
-        self.bucket = c.get("bucket") or self.find_bucket()
+        configured = c.get("bucket")
+        if configured and not configured.startswith(f"{c['bucket_prefix']}-"):
+            raise RuntimeError(f"cloud.bucket 은 {c['bucket_prefix']}- 로 시작해야 합니다: {configured}")
+        self.bucket = configured or self.find_bucket()
 
     def info(self) -> dict:
         return {"region": self.region, "profile": self.profile, "caller_type": self.caller_type,
@@ -83,9 +89,26 @@ class Cloud:
             raise RuntimeError(f"버킷이 여러 개입니다 {names}. config/pipeline.json 의 cloud.bucket 에 하나를 적으세요")
         return names[0] if names else None
 
+    def bucket_is_ours(self) -> bool:
+        from botocore.exceptions import ClientError
+
+        try:
+            tags = self.s3.get_bucket_tagging(Bucket=self.bucket)["TagSet"]
+        except ClientError as e:
+            if _code(e) in ("NoSuchTagSet", "NoSuchTagSetError"):
+                return False
+            raise
+        have = {t["Key"]: t["Value"] for t in tags}
+        return all(have.get(k) == v for k, v in self.tags.items())
+
+    def require_ours(self) -> None:
+        if not self.bucket_is_ours():
+            raise RuntimeError(f"버킷 {self.bucket} 에 이 과제의 태그가 없어 건드리지 않습니다")
+
     def ensure_bucket(self) -> str:
         if self.bucket:
             self.s3.head_bucket(Bucket=self.bucket)
+            self.require_ours()
             created = False
         else:
             self.bucket = self.bucket_prefix + pysecrets.token_hex(4)
@@ -93,13 +116,13 @@ class Cloud:
                 "CreateBucketConfiguration": {"LocationConstraint": self.region}}
             self.s3.create_bucket(Bucket=self.bucket, **kwargs)
             self.s3.get_waiter("bucket_exists").wait(Bucket=self.bucket)
+            self.s3.put_bucket_tagging(Bucket=self.bucket, Tagging={
+                "TagSet": [{"Key": k, "Value": v} for k, v in self.tags.items()]})
             created = True
         self.s3.put_public_access_block(Bucket=self.bucket, PublicAccessBlockConfiguration={
             "BlockPublicAcls": True, "IgnorePublicAcls": True,
             "BlockPublicPolicy": True, "RestrictPublicBuckets": True})
         self.s3.put_bucket_versioning(Bucket=self.bucket, VersioningConfiguration={"Status": "Enabled"})
-        self.s3.put_bucket_tagging(Bucket=self.bucket, Tagging={
-            "TagSet": [{"Key": k, "Value": v} for k, v in self.tags.items()]})
         self.s3.put_bucket_lifecycle_configuration(Bucket=self.bucket, LifecycleConfiguration={"Rules": [
             {"ID": "expire-old-packages", "Status": "Enabled", "Filter": {"Prefix": "packages/"},
              "Expiration": {"Days": 30}, "NoncurrentVersionExpiration": {"NoncurrentDays": 1}},
@@ -144,11 +167,37 @@ class Cloud:
         self.logs.put_retention_policy(logGroupName=self.log_group, retentionInDays=retention_days)
         return "created" if created else "exists"
 
-    def upload(self, local, key: str, metadata: dict | None = None) -> dict:
-        extra = {"Metadata": metadata} if metadata else {}
-        with open(local, "rb") as f:
-            r = self.s3.put_object(Bucket=self.bucket, Key=key, Body=f, **extra)
-        return {"uri": f"s3://{self.bucket}/{key}", "version_id": r.get("VersionId"), "etag": r.get("ETag")}
+    def current_object(self, key: str) -> dict | None:
+        from botocore.exceptions import ClientError
+
+        try:
+            return self.s3.head_object(Bucket=self.bucket, Key=key)
+        except ClientError as e:
+            if _code(e) in NOT_FOUND or _code(e) == "NoSuchKey":
+                return None
+            raise
+
+    def upload(self, local, key: str, sha256: str, metadata: dict | None = None) -> dict:
+        from botocore.exceptions import ClientError
+
+        meta = {"sha256": sha256, **(metadata or {})}
+        head = self.current_object(key)
+        if head and head.get("Metadata", {}).get("sha256") == sha256 and head.get("VersionId") not in (None, "null"):
+            return {"uri": f"s3://{self.bucket}/{key}", "version_id": head["VersionId"], "uploaded": False}
+        for attempt in range(UPLOAD_RETRIES):
+            with open(local, "rb") as f:
+                r = self.s3.put_object(Bucket=self.bucket, Key=key, Body=f, Metadata=meta)
+            version = r.get("VersionId")
+            if version and version != "null":
+                try:
+                    self.s3.head_object(Bucket=self.bucket, Key=key, VersionId=version)
+                    return {"uri": f"s3://{self.bucket}/{key}", "version_id": version, "uploaded": True}
+                except ClientError as e:
+                    if _code(e) not in NOT_FOUND and _code(e) != "NoSuchVersion":
+                        raise
+            print(f"  버킷 버전 관리가 반영되기를 기다리는 중... ({attempt + 1}/{UPLOAD_RETRIES})")
+            time.sleep(UPLOAD_WAIT_S)
+        raise RuntimeError("버킷 버전 관리가 켜지지 않아 객체 버전을 받지 못했습니다")
 
     def function_exists(self) -> bool:
         try:
@@ -207,6 +256,21 @@ class Cloud:
             if _code(e) != "InvalidParameterValueException":
                 raise
             return {"set": False, "reason": f"계정 동시 실행 한도가 낮아 예약하지 못함: {e}"}
+
+    def point_alias(self, version: str) -> dict:
+        try:
+            self.lam.update_alias(FunctionName=self.fn, Name=ALIAS, FunctionVersion=version)
+            action = "updated"
+        except self.lam.exceptions.ResourceNotFoundException:
+            self.lam.create_alias(FunctionName=self.fn, Name=ALIAS, FunctionVersion=version)
+            action = "created"
+        return {"alias": ALIAS, "version": version, "action": action}
+
+    def alias_version(self) -> str | None:
+        try:
+            return self.lam.get_alias(FunctionName=self.fn, Name=ALIAS)["FunctionVersion"]
+        except self.lam.exceptions.ResourceNotFoundException:
+            return None
 
     def latest_version(self) -> str:
         versions = []
@@ -272,6 +336,7 @@ class Cloud:
                 "memory_mb": conf["MemorySize"], "timeout_s": conf["Timeout"],
                 "last_modified": conf["LastModified"], "versions": versions,
                 "reserved_concurrency": (f.get("Concurrency") or {}).get("ReservedConcurrentExecutions"),
+                "alias_live": self.alias_version(),
                 "env_MODEL_URI": conf.get("Environment", {}).get("Variables", {}).get("MODEL_URI")}
         except self.lam.exceptions.ResourceNotFoundException:
             out["lambda_function"] = {"exists": False}
@@ -313,6 +378,8 @@ class Cloud:
             if not self.bucket:
                 raise ClientError({"Error": {"Code": "NoSuchBucket", "Message": "버킷 없음"}}, "HeadBucket")
             self.s3.head_bucket(Bucket=self.bucket)
+            if not self.bucket_is_ours():
+                raise ClientError({"Error": {"Code": "NotOurBucket", "Message": "과제 태그 없음"}}, "GetBucketTagging")
             for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=self.bucket):
                 objs = [{"Key": v["Key"], "VersionId": v["VersionId"]}
                         for v in page.get("Versions", []) + page.get("DeleteMarkers", [])]
@@ -423,14 +490,13 @@ def step_deploy(ctx) -> None:
     res["log_group"] = cloud.ensure_log_group(lcfg["log_retention_days"])
 
     model_key = cloud.model_key()
-    res["model_upload"] = cloud.upload(mpath, model_key, {"sha256": meta["model_sha256"], "version": meta["version"]})
-    res["metadata_upload"] = cloud.upload(model_dir(cfg) / "metadata.json", f"models/{meta['version']}/metadata.json")
+    res["model_upload"] = cloud.upload(mpath, model_key, meta["model_sha256"], {"version": meta["version"]})
+    meta_path = model_dir(cfg) / "metadata.json"
+    res["metadata_upload"] = cloud.upload(meta_path, f"models/{meta['version']}/metadata.json", sha256_file(meta_path))
     code_key = f"packages/lambda-{pkg_sha[:12]}.zip"
-    res["package_upload"] = cloud.upload(zip_path, code_key, {"sha256": pkg_sha})
+    res["package_upload"] = cloud.upload(zip_path, code_key, pkg_sha)
 
     override = getattr(ctx.args, "model_uri_override", None)
-    if not res["model_upload"]["version_id"]:
-        raise RuntimeError("버킷 버전 관리가 켜져 있지 않아 모델 파일 버전을 고정할 수 없습니다")
     model_uri = override or f"s3://{cloud.bucket}/{model_key}?versionId={res['model_upload']['version_id']}"
     env = {"MODEL_URI": model_uri, "MODEL_VERSION": meta["version"], "MODEL_SHA256": meta["model_sha256"],
            "JOBLIB_MULTIPROCESSING": "0"}
@@ -468,11 +534,14 @@ def step_smoke(ctx) -> None:
     report = run_cases(invoke, expected, f"lambda:{cloud.fn}:{version}", ctx.cfg, ctx.secrets)
     day = sample_day_comparison(report.pop("responses"), ctx.cfg)
     report["sample_day"] = day
-    write_json(ctx.out("results/service_check/cloud.json"), report)
     ctx.summary = {"passed": report["passed"], "total": report["total"], "function_version": version}
     if not report["all_passed"]:
+        write_json(ctx.out("results/service_check/cloud.json"), report)
         bad = [f"{c['name']}: {c['problems'][:1]}" for c in report["cases"] if not c["passed"]]
         raise RuntimeError(f"클라우드 서비스 검사 실패 {len(bad)}건: {bad[:3]}")
+    report["alias"] = cloud.point_alias(version)
+    write_json(ctx.out("results/service_check/cloud.json"), report)
+    ctx.cloud = {**ctx.cloud, "alias": report["alias"]}
 
 
 def step_cloud_eval(ctx) -> None:
@@ -533,8 +602,18 @@ def step_cloud_eval(ctx) -> None:
         raise RuntimeError(f"클라우드 예측이 로컬과 다릅니다 (최대 차이 {report['max_abs_diff_vs_local']})")
 
 
+def check_region(cloud) -> None:
+    last = ROOT / "results" / "cloud" / "deploy.json"
+    if last.exists():
+        deployed = load_json(last).get("cloud", {}).get("region")
+        if deployed and deployed != cloud.region:
+            raise RuntimeError(f"마지막 배포 리전은 {deployed} 입니다. --region {deployed} 로 실행하세요 "
+                               f"(지금 리전 {cloud.region})")
+
+
 def step_status(ctx) -> None:
     cloud = Cloud(ctx.cfg, ctx.args, ctx)
+    check_region(cloud)
     st = {"checked_at": now_iso(), **cloud.info(), "resources": cloud.status()}
     name = getattr(ctx.args, "status_name", None) or "status"
     write_json(ctx.out(f"results/cloud/{name}.json"), st)
@@ -545,6 +624,7 @@ def step_status(ctx) -> None:
 
 def step_cleanup(ctx) -> None:
     cloud = Cloud(ctx.cfg, ctx.args, ctx)
+    check_region(cloud)
     before = cloud.status()
     deleted = cloud.cleanup()
     after = cloud.status()

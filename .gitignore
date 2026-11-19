@@ -11,3 +11,5 @@ data/raw/*.zip
 *.log
 .vscode/
 .idea/
+models/_candidate/
+*.promote-bak

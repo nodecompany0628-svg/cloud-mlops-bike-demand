@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import compileall
+import importlib.util
 import py_compile
 import shutil
 import subprocess
@@ -58,8 +58,13 @@ def build_package(lambda_cfg: dict) -> dict:
 
     precompiled = f"{sys.version_info.major}.{sys.version_info.minor}" == py
     if precompiled:
-        compileall.compile_dir(PKG_DIR, quiet=2, stripdir=str(PKG_DIR), prependdir="/var/task",
-                               invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+        for src in sorted(PKG_DIR.rglob("*.py")):
+            try:
+                py_compile.compile(str(src), cfile=importlib.util.cache_from_source(str(src)),
+                                   dfile="/var/task/" + src.relative_to(PKG_DIR).as_posix(), doraise=True,
+                                   invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+            except py_compile.PyCompileError:
+                pass
 
     unzipped = _dir_size(PKG_DIR)
     if unzipped > UNZIPPED_LIMIT:
@@ -72,7 +77,8 @@ def build_package(lambda_cfg: dict) -> dict:
         for f in files:
             info = zipfile.ZipInfo(f.relative_to(PKG_DIR).as_posix(), date_time=FIXED_TIME)
             info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = 0o644 << 16
+            info.create_system = 3
+            info.external_attr = 0o100644 << 16
             z.writestr(info, f.read_bytes())
 
     installed = sorted(p.name for p in PKG_DIR.glob("*.dist-info"))

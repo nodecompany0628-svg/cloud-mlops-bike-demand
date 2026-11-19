@@ -106,9 +106,11 @@ def test_cloud_steps_end_to_end(sandbox):
     assert deploy["cloud"]["bucket"].startswith("bike-demand-mlops-ap-northeast-2-")
     assert deploy["cloud"]["caller_type"] == "user" and "caller" not in deploy["cloud"]
     assert recs[1]["cloud"]["bucket"] == recs[0]["cloud"]["bucket"]
+    assert deploy["model_upload"]["uploaded"] is False and deploy["package_upload"]["uploaded"] is False
 
     smoke = read(sandbox, "results/service_check/cloud.json")
     assert smoke["all_passed"] and smoke["total"] == len(load_cases())
+    assert smoke["alias"]["alias"] == "live" and smoke["alias"]["version"] == recs[2]["cloud"]["function_version"]
 
     ev = read(sandbox, "results/cloud/cloud_eval.json")
     assert ev["identical_to_local"] and ev["rows"] == 2888 and ev["batches"] == 6
@@ -116,6 +118,7 @@ def test_cloud_steps_end_to_end(sandbox):
 
     status = read(sandbox, "results/cloud/status.json")
     assert all(v["exists"] is True for v in status["resources"].values())
+    assert status["resources"]["lambda_function"]["alias_live"] == smoke["alias"]["version"]
 
     clean = read(sandbox, "results/cloud/cleanup.json")
     assert clean["all_gone"] and all(a["result"] == "deleted" for a in clean["actions"])
@@ -125,6 +128,34 @@ def test_cloud_steps_end_to_end(sandbox):
     for t in texts:
         assert MOTO_ACCOUNT not in t and "user/moto" not in t
         assert str(ROOT) not in t and str(ROOT).replace("\\", "\\\\") not in t
+
+
+def test_bucket_without_project_tags_is_left_alone(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    foreign = "bike-demand-mlops-ap-northeast-2-ffffffff"
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="ap-northeast-2")
+        s3.create_bucket(Bucket=foreign, CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"})
+        s3.put_object(Bucket=foreign, Key="keep.txt", Body=b"x")
+        rc_deploy = run(["deploy"])
+        rc_clean = run(["cleanup"])
+        keys = [o["Key"] for o in s3.list_objects_v2(Bucket=foreign).get("Contents", [])]
+    recs = records(sandbox)
+    assert rc_deploy == 1 and "태그" in recs[0]["error"]
+    assert rc_clean == 1 and keys == ["keep.txt"]
+
+
+def test_status_and_cleanup_refuse_other_region(sandbox, monkeypatch):
+    fake_root = sandbox / "root"
+    (fake_root / "results" / "cloud").mkdir(parents=True)
+    (fake_root / "results" / "cloud" / "deploy.json").write_text(
+        json.dumps({"cloud": {"region": "us-west-2"}}), encoding="utf-8")
+    monkeypatch.setattr(cloud, "ROOT", fake_root)
+    with mock_aws():
+        rc = run(["status", "cleanup"])
+    recs = records(sandbox)
+    assert rc == 1 and [r["status"] for r in recs] == ["failed", "skipped"]
+    assert "us-west-2" in recs[0]["error"]
 
 
 def test_override_deploy_is_recorded_separately(sandbox):
