@@ -72,7 +72,8 @@ def test_failure_stops_later_steps_and_keeps_good_results(isolated):
     assert (isolated / "results" / "a.txt").read_text(encoding="utf-8") == "new"
     failed = isolated / "results" / "failed" / f"{r[1]['run_id']}_bad"
     assert (failed / "results" / "a.txt").read_text(encoding="utf-8") == "broken"
-    assert "boom" in (failed / "error.txt").read_text(encoding="utf-8")
+    error = (failed / "error.txt").read_bytes()
+    assert b"boom" in error and b"\r\n" not in error
 
 
 def test_promote_is_all_or_nothing(isolated, monkeypatch):

@@ -89,6 +89,11 @@ def read(tmp_path, rel_path):
     return json.loads((tmp_path / "promoted" / rel_path).read_text(encoding="utf-8"))
 
 
+def failed_result(tmp_path, record, rel_path):
+    folder = tmp_path / "failed" / f"{record['run_id']}_{record['step']}"
+    return json.loads((folder / rel_path).read_text(encoding="utf-8"))
+
+
 def run(steps, **kw):
     return runlog.run_steps(steps, STEPS, load_config(), make_args(steps=steps, **kw), DEFAULT_CONFIG)
 
@@ -131,7 +136,8 @@ def test_cloud_steps_end_to_end(sandbox):
     status = read(sandbox, "results/cloud/status.json")
     assert status["resources"]["iam_role"]["exists"] is True and status["regions_unreachable"] == []
     assert status["resources"]["iam_role"]["permissions_boundary"].endswith(":policy/bike-demand-predict-boundary")
-    assert status["permissions_boundary"] == {"exists": True, "created_by_this_tool": True}
+    assert status["permissions_boundary"] == {"exists": True, "created_by_this_tool": True, "matches_config": True}
+    assert status["run_log_unreadable_lines"] == 0
     assert deploy["permissions_boundary"] in ("created", "exists")
     assert all(v["exists"] is True for v in regional(status["resources"]).values())
     assert regional(status["resources"])["lambda_function"]["alias_live"] == release["function_version"]
@@ -520,8 +526,9 @@ def test_bucket_name_that_only_looks_like_a_region_is_ignored(sandbox):
 
 
 def test_boundary_document_matches_docs():
+    c = load_config()["cloud"]
     on_disk = json.loads((ROOT / "docs" / "iam" / "lambda-boundary.json").read_text(encoding="utf-8"))
-    assert on_disk == cloud.boundary_document("bike-demand-mlops", "bike-demand-predict")
+    assert on_disk == cloud.boundary_document(c["bucket_prefix"], c["function_name"])
 
 
 def test_existing_role_without_boundary_is_refused(sandbox):
@@ -626,3 +633,52 @@ def test_boundary_kept_when_operator_cannot_delete_policies(sandbox, monkeypatch
     clean = read(sandbox, "results/cloud/cleanup.json")
     action = next(a for a in clean["actions"] if a["resource"].startswith("iam-policy:"))
     assert rc == 0 and clean["all_gone"] and action["result"].startswith("kept")
+
+
+def test_own_region_with_auth_error_still_blocks_cleanup(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    real_init = cloud.Cloud.__init__
+    with mock_aws():
+        assert run(["deploy"], region="us-west-2") == 0
+
+        def init(self, cfg, args, ctx=None, region=None):
+            if region == "us-west-2":
+                raise ClientError({"Error": {"Code": "InvalidClientTokenId", "Message": "region disabled"}},
+                                  "GetCallerIdentity")
+            real_init(self, cfg, args, ctx, region)
+        monkeypatch.setattr(cloud.Cloud, "__init__", init)
+        status_rc = run(["status"])
+        rc = run(["cleanup"])
+        roles = [r["RoleName"] for r in boto3.client("iam", region_name="ap-northeast-2").list_roles()["Roles"]]
+        functions = boto3.client("lambda", region_name="us-west-2").list_functions()["Functions"]
+    clean = failed_result(sandbox, records(sandbox)[-1], "results/cloud/cleanup.json")
+    assert status_rc == 1 and rc == 1 and not clean["all_gone"]
+    assert clean["regions_unreachable"][0]["blocking"] is True and "us-west-2" in records(sandbox)[-1]["error"]
+    assert "bike-demand-predict-role" in roles and len(functions) == 1
+
+
+def test_broken_run_log_line_fails_status_and_cleanup_but_keeps_role(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
+            f.write('{"run_id": "broken"\n')
+        status_rc = run(["status"])
+        rc = run(["cleanup"])
+        roles = [r["RoleName"] for r in boto3.client("iam", region_name="ap-northeast-2").list_roles()["Roles"]]
+        buckets = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
+    clean = failed_result(sandbox, records_tolerant(sandbox)[-1], "results/cloud/cleanup.json")
+    assert status_rc == 1 and rc == 1 and "읽을 수 없는 줄" in records_tolerant(sandbox)[-1]["error"]
+    assert clean["run_log_unreadable_lines"] == 1 and not clean["all_gone"]
+    assert "bike-demand-predict-role" in roles and buckets == []
+
+
+def test_boundary_with_other_content_stops_deploy_before_creating_bucket(sandbox):
+    other = cloud.boundary_document("bike-demand-mlops", "other-function")
+    with mock_aws():
+        boto3.client("iam", region_name="ap-northeast-2").create_policy(
+            PolicyName="bike-demand-predict-boundary", PolicyDocument=json.dumps(other))
+        rc = run(["deploy"])
+        buckets = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
+        roles = boto3.client("iam", region_name="ap-northeast-2").list_roles()["Roles"]
+    assert rc == 1 and "내용이 지금 설정" in records(sandbox)[-1]["error"] and buckets == [] and roles == []

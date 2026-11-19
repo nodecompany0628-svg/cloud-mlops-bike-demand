@@ -1,11 +1,11 @@
-from bikeml.cloud import preflight_problems
+from bikeml.cloud import library_mismatches, preflight_problems
 
 SHA = "a" * 64
 APP = {"lambda_function.py": "1", "bikeml/service.py": "2"}
 CRIT = {"must_beat_all_baselines": True, "min_mae_reduction_vs_hour_baseline": 0.3}
 LAMBDA = {"runtime": "python3.12", "architecture": "x86_64"}
 GOOD = dict(
-    model_meta={"model_sha256": SHA},
+    model_meta={"model_sha256": SHA, "library_versions": {"scikit-learn": "1.9.1", "numpy": "2.5.5"}},
     model_file_sha=SHA,
     evaluation={"passed": True, "model": {"sha256": SHA}, "criteria": CRIT, "eval_data": {"sha256": "t"}},
     service_check={"all_passed": True, "model": {"sha256": SHA}, "app_files": APP, "cases_sha256": "c"},
@@ -19,6 +19,7 @@ GOOD = dict(
     split_mismatch=[],
     lambda_cfg=LAMBDA,
     cases_sha="c",
+    library_mismatch=[],
 )
 
 
@@ -60,3 +61,12 @@ def test_service_check_and_package_gates():
 
 def test_changed_service_cases_block_deploy():
     assert "검사 사례" in problems(cases_sha="other")[0]
+
+
+def test_library_versions_must_match_lambda_pins():
+    meta = GOOD["model_meta"]
+    assert library_mismatches(meta, "numpy==2.5.5\nscikit-learn==1.9.1\nscipy==1.18.1\n") == []
+    found = library_mismatches(meta, "numpy==2.5.4\nScikit-Learn == 1.9.1\n")
+    assert found == ["numpy 2.5.5, requirements-lambda.txt 2.5.4"]
+    assert "라이브러리 버전" in problems(library_mismatch=found)[0]
+    assert "라이브러리 버전이 없음" in problems(model_meta={"model_sha256": SHA})[0]

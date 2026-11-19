@@ -21,7 +21,7 @@ def load_cases() -> list[dict]:
 def expected_model(cfg: dict) -> tuple[dict, dict]:
     meta = load_json(model_dir(cfg) / "metadata.json")
     return meta, {"version": meta["version"], "sha256": meta["model_sha256"],
-                  "sklearn": meta["library_versions"]["scikit-learn"]}
+                  "sklearn": meta["library_versions"]["scikit-learn"], "numpy": meta["library_versions"]["numpy"]}
 
 
 def build_payload(case: dict, by_name: dict, cfg: dict) -> dict:
@@ -54,9 +54,10 @@ def check_response(case: dict, resp: dict, expected_model: dict, responses: dict
             problems.append(f"모델 버전 {body.get('model_version')} (기대 {expected_model['version']})")
         if body.get("model_sha256") != expected_model["sha256"]:
             problems.append("모델 sha256 이 다름")
-        runtime_sklearn = (body.get("runtime") or {}).get("scikit-learn")
-        if "sklearn" in expected_model and runtime_sklearn != expected_model["sklearn"]:
-            problems.append(f"실행 환경 scikit-learn {runtime_sklearn} (기대 {expected_model['sklearn']})")
+        runtime = body.get("runtime") or {}
+        for lib, key in (("scikit-learn", "sklearn"), ("numpy", "numpy")):
+            if key in expected_model and runtime.get(lib) != expected_model[key]:
+                problems.append(f"실행 환경 {lib} {runtime.get(lib)} (기대 {expected_model[key]})")
         if "warning_contains" in exp and not any(exp["warning_contains"] in w for w in body.get("warnings", [])):
             problems.append(f"경고에 '{exp['warning_contains']}' 없음")
         ref = exp.get("same_prediction_as")

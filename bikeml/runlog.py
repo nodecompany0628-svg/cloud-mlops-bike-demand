@@ -223,7 +223,7 @@ def run_steps(step_names: list[str], registry: dict, cfg: dict, args, config_pat
             interrupted = isinstance(e, KeyboardInterrupt)
             status = "failed"
             error = "KeyboardInterrupt: 사용자가 중단함" if interrupted else f"{type(e).__name__}: {e}"
-            (stage / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+            (stage / "error.txt").write_text(traceback.format_exc(), encoding="utf-8", newline="\n")
             for bad in _scrub(stage, secrets):
                 (stage / bad).unlink()
             dest = FAILED / f"{run_id}_{name}"

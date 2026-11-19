@@ -7,6 +7,7 @@ import os
 import re
 import secrets as pysecrets
 import time
+import urllib.parse
 
 import pandas as pd
 
@@ -20,7 +21,7 @@ from .common import (
     write_json,
 )
 from .evaluate import daily_mae, metrics
-from .runlog import git_info, now_iso, sanitize
+from .runlog import git_info, now_iso, read_run_log, sanitize
 from .servicecheck import expected_model, run_cases, sample_day_comparison
 
 LAMBDA_TRUST = {
@@ -124,14 +125,26 @@ class Cloud:
     def boundary_arn(self) -> str:
         return f"arn:aws:iam::{self.account}:policy/{self.boundary_name}"
 
+    def boundary_matches(self, policy: dict) -> bool:
+        version = self.iam.get_policy_version(PolicyArn=self.boundary_arn(), VersionId=policy["DefaultVersionId"])
+        doc = version["PolicyVersion"]["Document"]
+        if isinstance(doc, str):
+            doc = json.loads(urllib.parse.unquote(doc))
+        return doc == boundary_document(self.bucket_base, self.fn)
+
     def ensure_boundary(self) -> str:
         from botocore.exceptions import ClientError
 
         try:
-            self.iam.get_policy(PolicyArn=self.boundary_arn())
-            return "exists"
+            policy = self.iam.get_policy(PolicyArn=self.boundary_arn())["Policy"]
         except self.iam.exceptions.NoSuchEntityException:
-            pass
+            policy = None
+        if policy is not None:
+            if not self.boundary_matches(policy):
+                raise RuntimeError(f"권한 경계 정책 {self.boundary_name} 의 내용이 지금 설정(함수 {self.fn}, "
+                                   f"버킷 접두어 {self.bucket_base})과 다릅니다. docs/iam/lambda-boundary.json 을 "
+                                   "설정에 맞게 고친 뒤 관리자가 그 내용으로 정책의 기본 버전을 바꿔야 합니다")
+            return "exists"
         try:
             self.iam.create_policy(PolicyName=self.boundary_name,
                                    PolicyDocument=json.dumps(boundary_document(self.bucket_base, self.fn)),
@@ -328,8 +341,9 @@ class Cloud:
                 except ClientError as e:
                     if _code(e) not in NOT_FOUND and _code(e) != "NoSuchVersion":
                         raise
-            print(f"  버킷 버전 관리가 반영되기를 기다리는 중... ({attempt + 1}/{attempts})")
-            time.sleep(UPLOAD_WAIT_S)
+            if attempt + 1 < attempts:
+                print(f"  버킷 버전 관리가 반영되기를 기다리는 중... ({attempt + 1}/{attempts})")
+                time.sleep(UPLOAD_WAIT_S)
         raise RuntimeError("버킷 버전 관리가 켜지지 않아 객체 버전을 받지 못했습니다")
 
     def function_exists(self) -> bool:
@@ -509,11 +523,12 @@ class Cloud:
 
     def boundary_status(self) -> dict:
         try:
-            self.iam.get_policy(PolicyArn=self.boundary_arn())
+            policy = self.iam.get_policy(PolicyArn=self.boundary_arn())["Policy"]
         except self.iam.exceptions.NoSuchEntityException:
             return {"exists": False}
         tags = {t["Key"]: t["Value"] for t in self.iam.list_policy_tags(PolicyArn=self.boundary_arn())["Tags"]}
-        return {"exists": True, "created_by_this_tool": self.ours(tags)}
+        return {"exists": True, "created_by_this_tool": self.ours(tags),
+                "matches_config": self.boundary_matches(policy)}
 
     def _delete(self, name: str, fn, done: list) -> None:
         from botocore.exceptions import ClientError
@@ -652,8 +667,6 @@ def other_account_regions(account: str) -> list[str]:
 
 
 def run_log_regions() -> set[str]:
-    from .runlog import read_run_log
-
     records, _ = read_run_log()
     return {r["cloud"]["region"] for r in records if (r.get("cloud") or {}).get("region")}
 
@@ -680,14 +693,29 @@ def _load_or_empty(path) -> dict:
     return load_json(path) if path.exists() else {}
 
 
+def library_mismatches(model_meta: dict, requirements_text: str) -> list[str]:
+    pins = {}
+    for line in requirements_text.splitlines():
+        name, sep, version = line.strip().partition("==")
+        if sep:
+            pins[name.strip().lower()] = version.strip()
+    return [f"{lib} {ver}, requirements-lambda.txt {pins.get(lib.lower())}"
+            for lib, ver in sorted((model_meta.get("library_versions") or {}).items())
+            if pins.get(lib.lower()) != ver]
+
+
 def preflight_problems(model_meta: dict, model_file_sha: str, evaluation: dict, service_check: dict,
                        package_info: dict, zip_sha: str | None, app_files: dict, requirements_sha: str,
                        criteria: dict, test_sha: str, model_mismatch: list, split_mismatch: list,
-                       lambda_cfg: dict, cases_sha: str) -> list[str]:
+                       lambda_cfg: dict, cases_sha: str, library_mismatch: list) -> list[str]:
     model_sha = model_meta.get("model_sha256")
     problems = []
     if model_file_sha != model_sha:
         problems.append("모델 파일이 metadata.json 의 sha256 과 다름")
+    if not model_meta.get("library_versions"):
+        problems.append("metadata.json 에 모델을 만든 라이브러리 버전이 없음")
+    elif library_mismatch:
+        problems.append(f"모델을 만든 라이브러리 버전이 Lambda 패키지와 다름({'; '.join(library_mismatch)})")
     if split_mismatch:
         problems.append(f"정리한 자료가 config 의 split 과 다름({', '.join(split_mismatch)})")
     if model_mismatch:
@@ -740,6 +768,7 @@ def deploy_preflight(cfg: dict, lambda_cfg: dict) -> dict:
         split_mismatch=split_problems(cfg, pd.read_csv(pdir / "train.csv"), pd.read_csv(pdir / "test.csv")),
         lambda_cfg=lambda_cfg,
         cases_sha=sha256_file(ROOT / "samples" / "service_cases.json"),
+        library_mismatch=library_mismatches(meta, package.REQUIREMENTS.read_text(encoding="utf-8")),
     )
     if problems:
         raise RuntimeError("배포 전 확인 실패: " + "; ".join(problems)
@@ -762,13 +791,14 @@ def step_deploy(ctx) -> None:
     res = {"cloud": cloud.info()}
     ctx.cloud = cloud.info()
 
+    res["permissions_boundary"] = cloud.ensure_boundary()
+    res["role"] = cloud.ensure_role()
+    ctx.state["role_created"] = res["role"] == "created"
+
     def remember_bucket():
         ctx.cloud = cloud.info()
     res["bucket"] = cloud.ensure_bucket(on_name=remember_bucket)
     ctx.cloud = cloud.info()
-    res["permissions_boundary"] = cloud.ensure_boundary()
-    res["role"] = cloud.ensure_role()
-    ctx.state["role_created"] = res["role"] == "created"
     res["log_group"] = cloud.ensure_log_group(lcfg["log_retention_days"])
 
     prefix = cloud.model_prefix(meta["model_sha256"])
@@ -827,11 +857,12 @@ def wait_until_ready(invoke) -> dict:
         message = str(err.get("message", ""))
         permission = err.get("code") == "MODEL_LOAD_FAILED" and any(
             s in message for s in ("403", "AccessDenied", "Forbidden"))
-        if not permission or attempt == READY_RETRIES:
-            return {"attempts": attempt, "status": resp.get("statusCode"), "waited_for_permissions": attempt > 1}
-        print(f"  모델 읽기 권한이 반영되기를 기다리는 중... ({attempt}/{READY_RETRIES})")
-        time.sleep(READY_WAIT_S)
-    return {"attempts": READY_RETRIES}
+        if not permission:
+            break
+        if attempt < READY_RETRIES:
+            print(f"  모델 읽기 권한이 반영되기를 기다리는 중... ({attempt}/{READY_RETRIES})")
+            time.sleep(READY_WAIT_S)
+    return {"attempts": attempt, "status": resp.get("statusCode"), "waited_for_permissions": attempt > 1}
 
 
 def step_smoke(ctx) -> None:
@@ -924,8 +955,6 @@ def step_cloud_eval(ctx) -> None:
 
 
 def last_status(step: str, identity: dict) -> str | None:
-    from .runlog import read_run_log
-
     records, broken = read_run_log()
     if broken:
         raise RuntimeError(f"실행 기록에 읽을 수 없는 줄이 {broken}개 있어 검사 결과를 확인할 수 없습니다")
@@ -961,8 +990,6 @@ NOT_ENABLED = {"InvalidClientTokenId", "UnrecognizedClientException", "AuthFailu
 
 
 def recorded_buckets() -> set[str]:
-    from .runlog import read_run_log
-
     records, _ = read_run_log()
     names = {(r.get("cloud") or {}).get("bucket") for r in records}
     for name in ("deploy.json", "deploy_override.json"):
@@ -998,7 +1025,7 @@ def _clouds(ctx) -> tuple[list[Cloud], list[dict]]:
             clouds.append(Cloud(ctx.cfg, ctx.args, ctx, region=r))
         except Exception as e:
             code = _code(e) if isinstance(e, ClientError) else ""
-            unreachable.append({"region": r, "own": r in own, "blocking": code not in NOT_ENABLED,
+            unreachable.append({"region": r, "own": r in own, "blocking": r in own or code not in NOT_ENABLED,
                                 "error": f"{type(e).__name__}: {e}"})
     for c in clouds:
         added = extra.get(c.region, set()) - set(c.buckets)
@@ -1024,10 +1051,11 @@ def step_status(ctx) -> None:
     name = getattr(ctx.args, "status_name", None) or "status"
     if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
         raise RuntimeError(f"--status-name 에는 영문, 숫자, _, - 만 쓸 수 있습니다: {name}")
+    _, broken = read_run_log()
     clouds, unreachable = _clouds(ctx)
     resources = _status_all(clouds)
     st = {"checked_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
-          "regions_unreachable": unreachable,
+          "regions_unreachable": unreachable, "run_log_unreadable_lines": broken,
           "other_account_regions": other_account_regions(clouds[0].account), "resources": resources}
     ctx.cloud = {**clouds[0].info(), "regions_checked": st["regions_checked"]}
     st["permissions_boundary"] = clouds[0].boundary_status()
@@ -1035,33 +1063,45 @@ def step_status(ctx) -> None:
     ctx.summary = {"iam_role": resources["iam_role"].get("exists"),
                    **{f"{r}:{k}": v.get("exists") for r, res in resources["regions"].items() for k, v in res.items()}}
     print(json.dumps(ctx.summary, ensure_ascii=False))
+    if broken:
+        raise RuntimeError(BROKEN_RUN_LOG.format(n=broken))
     if not status_complete(resources, unreachable):
         raise RuntimeError("일부 자원이나 리전의 상태를 확인하지 못했습니다. 결과 파일의 regions_unreachable, exists=null 항목을 보세요")
 
 
+BROKEN_RUN_LOG = ("runs/run_log.jsonl 에 읽을 수 없는 줄이 {n}개 있어, 그 줄에 적힌 리전이나 버킷을 놓쳤을 수 있습니다. "
+                  "그 줄을 고치거나 지운 뒤 다시 실행하세요")
+
+
 def step_cleanup(ctx) -> None:
+    _, broken = read_run_log()
     clouds, unreachable = _clouds(ctx)
     before = _status_all(clouds)
     deleted = [d for c in clouds for d in c.cleanup_regional()]
-    if all(d["result"] in ("deleted", "not_found") for d in deleted) and not any(u["blocking"] for u in unreachable):
+    own_unreachable = [u["region"] for u in unreachable if u["blocking"]]
+    remove_role = all(d["result"] in ("deleted", "not_found") for d in deleted) and not own_unreachable and not broken
+    if remove_role:
         deleted += clouds[0].cleanup_role()
     else:
-        deleted.append({"resource": f"iam:{clouds[0].role}", "result": "kept: 남은 지역 자원이 이 역할을 쓸 수 있어 지우지 않음"})
+        deleted.append({"resource": f"iam:{clouds[0].role}",
+                        "result": "kept: 지역 자원이 남았거나 다 확인하지 못해, 이 역할을 쓰는 함수가 있을 수 있음"})
     after = _status_all(clouds)
-    for _ in range(STATUS_RETRIES):
+    for _ in range(STATUS_RETRIES if remove_role else 0):
         if all_gone(after):
             break
         time.sleep(STATUS_WAIT_S)
         after = _status_all(clouds)
     others = other_account_regions(clouds[0].account)
-    own_unreachable = [u["region"] for u in unreachable if u["blocking"]]
     report = {"cleaned_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
-              "regions_unreachable": unreachable, "before": before, "actions": deleted, "after": after,
-              "all_gone": all_gone(after) and not own_unreachable, "other_account_regions": others}
+              "regions_unreachable": unreachable, "run_log_unreadable_lines": broken, "before": before,
+              "actions": deleted, "after": after,
+              "all_gone": all_gone(after) and not own_unreachable and not broken, "other_account_regions": others}
     write_json(ctx.out("results/cloud/cleanup.json"), report)
     ctx.cloud = {**clouds[0].info(), "regions_checked": report["regions_checked"]}
     ctx.summary = {"all_gone": report["all_gone"], "actions": {d["resource"]: d["result"] for d in deleted},
                    "other_account_regions": others}
+    if broken:
+        raise RuntimeError("찾은 자원은 정리했고 IAM 역할은 남겼습니다. " + BROKEN_RUN_LOG.format(n=broken))
     if not report["all_gone"]:
         raise RuntimeError(f"남은 자원이 있거나 확인하지 못했습니다(접속하지 못한 리전 {own_unreachable}): {after}")
     forget_account(clouds[0].account)
