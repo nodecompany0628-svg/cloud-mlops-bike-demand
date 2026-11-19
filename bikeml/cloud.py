@@ -206,7 +206,7 @@ class Cloud:
         self.s3.put_bucket_lifecycle_configuration(Bucket=self.bucket, LifecycleConfiguration={"Rules": [
             {"ID": "expire-old-packages", "Status": "Enabled", "Filter": {"Prefix": "packages/"},
              "Expiration": {"Days": 30}, "NoncurrentVersionExpiration": {"NoncurrentDays": 1}},
-            {"ID": "expire-noncurrent", "Status": "Enabled", "Filter": {"Prefix": ""},
+            {"ID": "expire-noncurrent-models", "Status": "Enabled", "Filter": {"Prefix": "models/"},
              "NoncurrentVersionExpiration": {"NoncurrentDays": 30}},
         ]})
         return created
@@ -852,9 +852,33 @@ def step_release(ctx) -> None:
     ctx.summary = {"live": version, "previous_live": previous}
 
 
+NOT_ENABLED = {"InvalidClientTokenId", "UnrecognizedClientException", "AuthFailure", "OptInRequired"}
+
+
+def recorded_buckets() -> set[str]:
+    from .runlog import read_run_log
+
+    records, _ = read_run_log()
+    names = {(r.get("cloud") or {}).get("bucket") for r in records}
+    for name in ("deploy.json", "deploy_override.json"):
+        path = RESULTS / "cloud" / name
+        if path.exists():
+            names.add(load_json(path).get("cloud", {}).get("bucket"))
+    return {n for n in names if n}
+
+
 def _clouds(ctx) -> tuple[list[Cloud], list[dict]]:
+    from botocore.exceptions import ClientError
+
     first = Cloud(ctx.cfg, ctx.args, ctx)
-    own = first.bucket_regions() | {d["region"] for d in deployments() if d["account"] == account_key(first.account)}
+    extra = {}
+    for name in recorded_buckets():
+        if name.startswith(f"{first.bucket_base}-"):
+            region = first.bucket_region(name)
+            if region:
+                extra.setdefault(region, set()).add(name)
+    own = first.bucket_regions() | set(extra)
+    own |= {d["region"] for d in deployments() if d["account"] == account_key(first.account)}
     if first.configured_region:
         own.add(first.configured_region)
     regions = set(known_regions(ctx.cfg, ctx.args, first.account)) | own
@@ -863,7 +887,15 @@ def _clouds(ctx) -> tuple[list[Cloud], list[dict]]:
         try:
             clouds.append(Cloud(ctx.cfg, ctx.args, ctx, region=r))
         except Exception as e:
-            unreachable.append({"region": r, "own": r in own, "error": f"{type(e).__name__}: {e}"})
+            code = _code(e) if isinstance(e, ClientError) else ""
+            unreachable.append({"region": r, "own": r in own, "blocking": code not in NOT_ENABLED,
+                                "error": f"{type(e).__name__}: {e}"})
+    for c in clouds:
+        added = extra.get(c.region, set()) - set(c.buckets)
+        if added:
+            c.buckets = sorted(set(c.buckets) | added)
+            if not c.configured:
+                c.bucket = c.buckets[0] if len(c.buckets) == 1 else None
     return clouds, unreachable
 
 
@@ -892,7 +924,7 @@ def step_cleanup(ctx) -> None:
     clouds, unreachable = _clouds(ctx)
     before = _status_all(clouds)
     deleted = [d for c in clouds for d in c.cleanup_regional()]
-    if all(d["result"] in ("deleted", "not_found") for d in deleted) and not any(u["own"] for u in unreachable):
+    if all(d["result"] in ("deleted", "not_found") for d in deleted) and not any(u["blocking"] for u in unreachable):
         deleted += clouds[0].cleanup_role()
     else:
         deleted.append({"resource": f"iam:{clouds[0].role}", "result": "kept: 남은 지역 자원이 이 역할을 쓸 수 있어 지우지 않음"})
@@ -903,7 +935,7 @@ def step_cleanup(ctx) -> None:
         time.sleep(STATUS_WAIT_S)
         after = _status_all(clouds)
     others = other_account_regions(clouds[0].account)
-    own_unreachable = [u["region"] for u in unreachable if u["own"]]
+    own_unreachable = [u["region"] for u in unreachable if u["blocking"]]
     report = {"cleaned_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
               "regions_unreachable": unreachable, "before": before, "actions": deleted, "after": after,
               "all_gone": all_gone(after) and not own_unreachable, "other_account_regions": others}

@@ -171,3 +171,17 @@ def test_sanitize_hides_account_in_arns_and_profile_names():
     clean = runlog.sanitize(msg, [("profile", "mlops")])
     assert "111122223333" not in clean and "444455556666" not in clean
     assert 'profile "<PROFILE>"' in clean and "bike-demand-mlops-ap-northeast-2-1a2b3c4d" in clean
+
+
+def test_common_word_profile_does_not_rewrite_values():
+    s = [("profile", "model")]
+    assert runlog.sanitize("s3://b/models/v/abc/model.joblib", s) == "s3://b/models/v/abc/model.joblib"
+    assert runlog.sanitize("results/cloud/deploy.json", [("profile", "results")]) == "results/cloud/deploy.json"
+    assert runlog.sanitize("The config profile (model) could not be found", s) == "The config profile (<PROFILE>) could not be found"
+    assert "model" not in runlog.sanitize("Visited profiles: [model, base]", s)
+
+
+def test_home_path_redaction_stops_at_folder_boundary():
+    home = str(Path.home())
+    assert runlog.sanitize(home + "\\a.txt", []) == "~\\a.txt"
+    assert runlog.sanitize(home + "x\\a.txt", []).startswith(home + "x")

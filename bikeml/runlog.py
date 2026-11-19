@@ -65,33 +65,41 @@ def _path_variants(path: Path) -> list[str]:
     return [raw.replace("\\", "\\" * 4), raw.replace("\\", "\\" * 2), raw, path.as_posix()]
 
 
-def _redactions(secrets: list) -> list[tuple[str, str]]:
-    pairs = [(s, "<ACCOUNT_ID>") for s in secrets if isinstance(s, str) and s]
-    pairs += [(v, "<REPO>") for v in _path_variants(ROOT)]
-    pairs += [(v, "~") for v in _path_variants(Path.home())]
-    return pairs
+PATH_END = r"(?=[\\/\"'\s:;,)\]>]|$)"
+
+
+def _redactions(secrets: list) -> list[tuple[re.Pattern, str]]:
+    pats = [(re.compile(r"(?<!\d)" + re.escape(s) + r"(?!\d)"), "<ACCOUNT_ID>")
+            for s in secrets if isinstance(s, str) and s]
+    for path, repl in ((ROOT, "<REPO>"), (Path.home(), "~")):
+        pats += [(re.compile(re.escape(v) + PATH_END, re.IGNORECASE), repl) for v in _path_variants(path)]
+    return pats
 
 
 PROFILE_IN_ERROR = re.compile(r"(profile \()[^)]*(\))")
+PROFILE_QUOTED = re.compile(r"(profile \")[^\"]*(\")")
+PROFILE_LIST = re.compile(r"(profiles: \[)[^\]]*(\])")
 ARN_ACCOUNT = re.compile(r"(arn:aws[\w-]*:[\w-]*:[\w-]*:)\d{12}")
 PRINCIPAL = re.compile(r"((?:user|assumed-role|federated-user)/)[^\s\\\"',;)]+")
 
 
 def _user_pattern() -> re.Pattern | None:
     name = Path.home().name
-    return re.compile(r"(Users[\\/]+)" + re.escape(name), re.IGNORECASE) if name else None
+    return re.compile(r"(Users[\\/]+)" + re.escape(name) + PATH_END, re.IGNORECASE) if name else None
 
 
 def sanitize(obj, secrets: list[str]):
     if isinstance(obj, str):
-        for s, repl in _redactions(secrets):
-            obj = re.sub(re.escape(s), lambda _m, r=repl: r, obj, flags=re.IGNORECASE)
+        for pat, repl in _redactions(secrets):
+            obj = pat.sub(lambda _m, r=repl: r, obj)
         obj = ARN_ACCOUNT.sub(r"\1<ACCOUNT_ID>", obj)
         obj = PRINCIPAL.sub(r"\1<NAME>", obj)
         obj = PROFILE_IN_ERROR.sub(r"\1<PROFILE>\2", obj)
+        obj = PROFILE_QUOTED.sub(r"\1<PROFILE>\2", obj)
+        obj = PROFILE_LIST.sub(r"\1<PROFILE>\2", obj)
         for s in secrets:
             if isinstance(s, tuple) and s[0] == "profile" and s[1]:
-                obj = re.sub(r"(?<![\w-])" + re.escape(s[1]) + r"(?![\w-])", "<PROFILE>", obj)
+                obj = re.sub(r"(profile\s+)" + re.escape(s[1]) + r"(?![\w-])", r"\1<PROFILE>", obj)
         pat = _user_pattern()
         return pat.sub(r"\1<USER>", obj) if pat else obj
     if isinstance(obj, dict):

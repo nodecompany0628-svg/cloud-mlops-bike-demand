@@ -445,3 +445,31 @@ def records_tolerant(tmp_path):
         except json.JSONDecodeError:
             pass
     return out
+
+
+def test_cleanup_finds_custom_bucket_after_it_is_removed_from_config(sandbox):
+    cfg = load_config()
+    cfg["cloud"]["bucket"] = "bike-demand-mlops-mine"
+    with mock_aws():
+        assert runlog.run_steps(["deploy"], STEPS, cfg, make_args(steps=["deploy"]), DEFAULT_CONFIG) == 0
+        rc = run(["cleanup"])
+        left = [b["Name"] for b in boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]]
+    assert rc == 0 and left == []
+
+
+def test_region_not_enabled_is_skipped(sandbox, monkeypatch):
+    real_init = cloud.Cloud.__init__
+    cloud.write_json(cloud.REGIONS_STATE, [])
+    runlog.RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"run_id": "x", "step": "status", "status": "success", "cloud": {"region": "me-central-1"}}) + "\n")
+
+    def init(self, cfg, args, ctx=None, region=None):
+        if region == "me-central-1":
+            raise ClientError({"Error": {"Code": "InvalidClientTokenId", "Message": "region disabled"}}, "GetCallerIdentity")
+        real_init(self, cfg, args, ctx, region)
+    with mock_aws():
+        monkeypatch.setattr(cloud.Cloud, "__init__", init)
+        rc = run(["cleanup"])
+    clean = read(sandbox, "results/cloud/cleanup.json")
+    assert rc == 0 and clean["regions_unreachable"][0]["blocking"] is False
