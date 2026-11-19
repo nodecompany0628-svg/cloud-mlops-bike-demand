@@ -226,6 +226,18 @@ class Cloud:
         self.s3.put_bucket_tagging(Bucket=self.bucket, Tagging={
             "TagSet": [{"Key": k, "Value": v} for k, v in self.tags.items()]})
 
+    def check_function(self) -> None:
+        if self.function_exists():
+            self.require_ours(f"Lambda 함수 {self.fn}", self.function_tags())
+
+    def log_group_exists(self) -> bool:
+        groups = self.logs.describe_log_groups(logGroupNamePrefix=self.log_group)["logGroups"]
+        return any(g["logGroupName"] == self.log_group for g in groups)
+
+    def check_log_group(self) -> None:
+        if self.log_group_exists():
+            self.require_ours(f"로그 그룹 {self.log_group}", self.log_group_tags())
+
     def check_bucket(self) -> dict | None:
         if self.configured and self.configured_region not in (None, self.region):
             raise RuntimeError(f"cloud.bucket {self.configured} 의 리전({self.configured_region})이 "
@@ -500,6 +512,8 @@ class Cloud:
         return {"exists": combined, "buckets": found}
 
     def regional_status(self) -> dict:
+        from botocore.exceptions import ClientError
+
         out = {}
         try:
             f = self.lam.get_function(FunctionName=self.fn)
@@ -516,14 +530,22 @@ class Cloud:
                 "env_MODEL_URI": conf.get("Environment", {}).get("Variables", {}).get("MODEL_URI")}
         except self.lam.exceptions.ResourceNotFoundException:
             out["lambda_function"] = {"exists": False}
+        except ClientError as e:
+            out["lambda_function"] = {"exists": None, "error": _code(e)}
         out["s3_bucket"] = self.bucket_status()
-        groups = self.logs.describe_log_groups(logGroupNamePrefix=self.log_group)["logGroups"]
+        try:
+            groups = self.logs.describe_log_groups(logGroupNamePrefix=self.log_group)["logGroups"]
+        except ClientError as e:
+            out["log_group"] = {"exists": None, "error": _code(e)}
+            return out
         g = next((x for x in groups if x["logGroupName"] == self.log_group), None)
         out["log_group"] = ({"exists": True, "retention_days": g.get("retentionInDays"),
                              "stored_bytes": g.get("storedBytes")} if g else {"exists": False})
         return out
 
     def role_status(self) -> dict:
+        from botocore.exceptions import ClientError
+
         try:
             role = self.iam.get_role(RoleName=self.role)["Role"]
             pols = self.iam.list_role_policies(RoleName=self.role)["PolicyNames"]
@@ -531,15 +553,21 @@ class Cloud:
                     "permissions_boundary": (role.get("PermissionsBoundary") or {}).get("PermissionsBoundaryArn")}
         except self.iam.exceptions.NoSuchEntityException:
             return {"exists": False}
+        except ClientError as e:
+            return {"exists": None, "error": _code(e)}
 
     def boundary_status(self) -> dict:
+        from botocore.exceptions import ClientError
+
         try:
             policy = self.iam.get_policy(PolicyArn=self.boundary_arn())["Policy"]
+            tags = {t["Key"]: t["Value"] for t in self.iam.list_policy_tags(PolicyArn=self.boundary_arn())["Tags"]}
+            return {"exists": True, "created_by_this_tool": self.ours(tags),
+                    "matches_config": self.boundary_matches(policy)}
         except self.iam.exceptions.NoSuchEntityException:
             return {"exists": False}
-        tags = {t["Key"]: t["Value"] for t in self.iam.list_policy_tags(PolicyArn=self.boundary_arn())["Tags"]}
-        return {"exists": True, "created_by_this_tool": self.ours(tags),
-                "matches_config": self.boundary_matches(policy)}
+        except ClientError as e:
+            return {"exists": None, "error": _code(e)}
 
     def _delete(self, name: str, fn, done: list) -> None:
         from botocore.exceptions import ClientError
@@ -613,6 +641,9 @@ class Cloud:
 
             tags = {t["Key"]: t["Value"] for t in self.iam.list_policy_tags(PolicyArn=self.boundary_arn())["Tags"]}
             self.require_ours(f"권한 경계 정책 {self.boundary_name}", tags)
+            for v in self.iam.list_policy_versions(PolicyArn=self.boundary_arn())["Versions"]:
+                if not v["IsDefaultVersion"]:
+                    self.iam.delete_policy_version(PolicyArn=self.boundary_arn(), VersionId=v["VersionId"])
             for attempt in range(1, STATUS_RETRIES + 1):
                 try:
                     self.iam.delete_policy(PolicyArn=self.boundary_arn())
@@ -822,6 +853,8 @@ def step_deploy(ctx) -> None:
 
     cloud.check_bucket()
     cloud.check_role()
+    cloud.check_function()
+    cloud.check_log_group()
     res["permissions_boundary"] = cloud.ensure_boundary()
     res["role"] = cloud.ensure_role()
     ctx.state["role_created"] = res["role"] == "created"

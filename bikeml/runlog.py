@@ -71,7 +71,9 @@ PATH_END = r"(?=[\\/\"'\s:;,)\]>]|$)"
 def _redactions(secrets: list) -> list[tuple[re.Pattern, str]]:
     pats = [(re.compile(r"(?<!\d)" + re.escape(s) + r"(?!\d)"), "<ACCOUNT_ID>")
             for s in secrets if isinstance(s, str) and s]
-    for path, repl in ((ROOT, "<REPO>"), (Path.home(), "~")):
+    folders = [(ROOT, "<REPO>"), (Path.home(), "~")]
+    folders += [(s[1], "<EXTERNAL>") for s in secrets if isinstance(s, tuple) and s[0] == "path"]
+    for path, repl in folders:
         pats += [(re.compile(re.escape(v) + PATH_END, re.IGNORECASE), repl) for v in _path_variants(path)]
     return pats
 
@@ -209,6 +211,9 @@ def run_steps(step_names: list[str], registry: dict, cfg: dict, args, config_pat
     profile = resolve_profile(cfg, getattr(args, "profile", None))
     if profile:
         secrets.append(("profile", profile))
+    for value in (getattr(args, "config", None), getattr(args, "lambda_config", None)):
+        if value and rel(value).startswith("<EXTERNAL>/"):
+            secrets.append(("path", Path(value).resolve().parent))
     for i, name in enumerate(step_names):
         stage = STAGING / run_id / name
         stage.mkdir(parents=True, exist_ok=True)
@@ -285,7 +290,7 @@ def _cleanup_staging(run_id: str) -> None:
 
 
 def _valid_record(rec) -> bool:
-    if not isinstance(rec, dict):
+    if not isinstance(rec, dict) or not all(isinstance(rec.get(k), str) for k in ("run_id", "step", "status")):
         return False
     cloud = rec.get("cloud")
     if cloud is None:

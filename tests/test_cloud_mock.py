@@ -189,6 +189,7 @@ def test_role_without_project_tags_is_left_alone(sandbox, monkeypatch):
         iam.create_role(RoleName="bike-demand-predict-role", AssumeRolePolicyDocument=json.dumps(cloud.LAMBDA_TRUST))
         rc_deploy = run(["deploy"])
         created = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
+        created += iam.list_policies(Scope="Local")["Policies"]
         sleeps = []
         monkeypatch.setattr(cloud.time, "sleep", sleeps.append)
         rc_clean = run(["cleanup"])
@@ -735,3 +736,44 @@ def test_cleanup_error_is_not_recorded_as_success(sandbox, monkeypatch):
     rec = records(sandbox)[-1]
     clean = failed_result(sandbox, rec, "results/cloud/cleanup.json")
     assert rc == 1 and "삭제 중 오류" in rec["error"] and clean["errors"][0]["result"] == "error: ServiceFailure"
+
+
+def test_untagged_log_group_blocks_deploy_before_anything_is_created(sandbox):
+    with mock_aws():
+        boto3.client("logs", region_name="ap-northeast-2").create_log_group(logGroupName="/aws/lambda/bike-demand-predict")
+        rc = run(["deploy"])
+        iam = boto3.client("iam", region_name="ap-northeast-2")
+        created = (boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
+                   + iam.list_roles()["Roles"] + iam.list_policies(Scope="Local")["Policies"])
+    assert rc == 1 and "로그 그룹" in records(sandbox)[-1]["error"] and created == []
+
+
+def test_boundary_with_extra_versions_is_deleted(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        iam = boto3.client("iam", region_name="ap-northeast-2")
+        arn = next(p["Arn"] for p in iam.list_policies(Scope="Local")["Policies"])
+        iam.create_policy_version(PolicyArn=arn, PolicyDocument=json.dumps(
+            cloud.boundary_document("bike-demand-mlops", "bike-demand-predict")), SetAsDefault=True)
+        rc = run(["cleanup"])
+        policies = iam.list_policies(Scope="Local")["Policies"]
+    assert rc == 0 and policies == []
+
+
+def test_status_records_unknown_role_state(sandbox, monkeypatch):
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        real_client = boto3.Session.client
+
+        def client(self, name, *a, **kw):
+            c = real_client(self, name, *a, **kw)
+            if name == "iam":
+                def denied(**kwargs):
+                    raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "GetRole")
+                c.get_role = denied
+            return c
+        monkeypatch.setattr(boto3.Session, "client", client)
+        rc = run(["status"])
+    status = failed_result(sandbox, records(sandbox)[-1], "results/cloud/status.json")
+    assert rc == 1 and status["resources"]["iam_role"] == {"exists": None, "error": "AccessDenied"}

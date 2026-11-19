@@ -202,12 +202,15 @@ def test_data_files_are_not_rewritten(isolated):
 
 def test_odd_run_log_lines_count_as_unreadable(isolated):
     runlog.RUN_LOG.parent.mkdir(parents=True)
-    good = json.dumps({"run_id": "a", "step": "deploy", "cloud": {"region": "ap-northeast-2", "bucket": "b"}})
-    lines = [good.encode(), b"", b"[]", b"\xff\xfe", json.dumps({"cloud": []}).encode(),
-             json.dumps({"cloud": {"region": 5}}).encode(), b'{"run_id": "cut"']
+    base = {"run_id": "a", "step": "deploy", "status": "success"}
+    good = json.dumps({**base, "cloud": {"region": "ap-northeast-2", "bucket": "b"}})
+    lines = [good.encode(), b"", b"[]", b"\xff\xfe", json.dumps({**base, "cloud": []}).encode(),
+             json.dumps({**base, "cloud": {"region": 5}}).encode(), b'{"run_id": "cut"',
+             json.dumps({"cloud": None}).encode()]
     runlog.RUN_LOG.write_bytes(b"\n".join(lines) + b"\n")
     records, broken = runlog.read_run_log()
-    assert [r["run_id"] for r in records] == ["a"] and broken == 5
+    assert [r["run_id"] for r in records] == ["a"] and broken == 6
+    runlog.print_runs()
 
 
 def test_config_path_outside_repo_is_not_recorded(isolated, tmp_path):
@@ -216,3 +219,16 @@ def test_config_path_outside_repo_is_not_recorded(isolated, tmp_path):
     assert runlog.run_steps(["ok"], {"ok": lambda ctx: None}, load_config(), args, DEFAULT_CONFIG) == 0
     rec = recs(isolated)[0]
     assert rec["args"]["config"] == "<EXTERNAL>/my_config.json" and "elsewhere" not in json.dumps(rec)
+
+
+def test_error_text_hides_folder_of_external_config(isolated):
+    outside = Path(Path.home().anchor) / "zz_bikeml_external" / "lam.json"
+    args = argparse.Namespace(config=str(DEFAULT_CONFIG), lambda_config=str(outside), cmd="run", steps=["bad"])
+
+    def bad(ctx):
+        open(outside, encoding="utf-8")
+    assert runlog.run_steps(["bad"], {"bad": bad}, load_config(), args, DEFAULT_CONFIG) == 1
+    rec = recs(isolated)[0]
+    error_txt = (isolated / "results" / "failed" / f"{rec['run_id']}_bad" / "error.txt").read_text(encoding="utf-8")
+    assert "<EXTERNAL>" in rec["error"] and "zz_bikeml_external" not in json.dumps(rec)
+    assert "zz_bikeml_external" not in error_txt
