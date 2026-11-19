@@ -33,19 +33,40 @@
       ]
     },
     {
-      "Sid": "LambdaExecutionRole",
+      "Sid": "CreateOrChangeRoleOnlyWithBoundary",
       "Effect": "Allow",
       "Action": [
         "iam:CreateRole",
+        "iam:PutRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::*:role/bike-demand-predict-role",
+      "Condition": {
+        "StringLike": {
+          "iam:PermissionsBoundary": "arn:aws:iam::*:policy/bike-demand-predict-boundary"
+        }
+      }
+    },
+    {
+      "Sid": "LambdaExecutionRole",
+      "Effect": "Allow",
+      "Action": [
         "iam:GetRole",
         "iam:TagRole",
-        "iam:PutRolePolicy",
         "iam:ListRolePolicies",
         "iam:DeleteRolePolicy",
         "iam:DeleteRole",
         "iam:ListRoleTags"
       ],
       "Resource": "arn:aws:iam::*:role/bike-demand-predict-role"
+    },
+    {
+      "Sid": "ReadBoundaryPolicy",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetPolicy",
+        "iam:ListPolicyTags"
+      ],
+      "Resource": "arn:aws:iam::*:policy/bike-demand-predict-boundary"
     },
     {
       "Sid": "PassRoleToLambdaOnly",

@@ -8,7 +8,7 @@ GOOD = dict(
     model_meta={"model_sha256": SHA},
     model_file_sha=SHA,
     evaluation={"passed": True, "model": {"sha256": SHA}, "criteria": CRIT, "eval_data": {"sha256": "t"}},
-    service_check={"all_passed": True, "model": {"sha256": SHA}, "app_files": APP},
+    service_check={"all_passed": True, "model": {"sha256": SHA}, "app_files": APP, "cases_sha256": "c"},
     package_info={"zip_sha256": "z", "app_files": APP, "requirements_sha256": "r", **LAMBDA},
     zip_sha="z",
     app_files=APP,
@@ -18,6 +18,7 @@ GOOD = dict(
     model_mismatch=[],
     split_mismatch=[],
     lambda_cfg=LAMBDA,
+    cases_sha="c",
 )
 
 
@@ -55,3 +56,7 @@ def test_service_check_and_package_gates():
     assert "requirements-lambda" in problems(requirements_sha="other")[0]
     assert "아키텍처" in problems(lambda_cfg={**LAMBDA, "architecture": "arm64"})[0]
     assert "아키텍처" in problems(lambda_cfg={**LAMBDA, "runtime": "python3.13"})[0]
+
+
+def test_changed_service_cases_block_deploy():
+    assert "검사 사례" in problems(cases_sha="other")[0]

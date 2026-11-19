@@ -43,6 +43,18 @@ class NotOurs(Exception):
     pass
 
 
+def boundary_document(bucket_base: str, function_name: str) -> dict:
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {"Sid": "LambdaLogs", "Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+             "Resource": f"arn:aws:logs:*:*:log-group:/aws/lambda/{function_name}:*"},
+            {"Sid": "ReadModels", "Effect": "Allow", "Action": ["s3:GetObject", "s3:GetObjectVersion"],
+             "Resource": f"arn:aws:s3:::{bucket_base}-*/models/*"},
+        ],
+    }
+
+
 def _code(e) -> str:
     return e.response.get("Error", {}).get("Code", "")
 
@@ -77,6 +89,7 @@ class Cloud:
         print(f"  AWS 계정 ...{self.account[-4:]} / {self.caller_type} / 프로필 {self.profile} / 리전 {self.region}")
         self.fn = c["function_name"]
         self.role = c["role_name"]
+        self.boundary_name = c["permissions_boundary"]
         self.bucket_prefix = f"{c['bucket_prefix']}-{self.region}-"
         self.log_group = f"/aws/lambda/{self.fn}"
         self.tags = c.get("tags", {})
@@ -107,6 +120,29 @@ class Cloud:
 
     def role_arn(self) -> str:
         return f"arn:aws:iam::{self.account}:role/{self.role}"
+
+    def boundary_arn(self) -> str:
+        return f"arn:aws:iam::{self.account}:policy/{self.boundary_name}"
+
+    def ensure_boundary(self) -> str:
+        from botocore.exceptions import ClientError
+
+        try:
+            self.iam.get_policy(PolicyArn=self.boundary_arn())
+            return "exists"
+        except self.iam.exceptions.NoSuchEntityException:
+            pass
+        try:
+            self.iam.create_policy(PolicyName=self.boundary_name,
+                                   PolicyDocument=json.dumps(boundary_document(self.bucket_base, self.fn)),
+                                   Description="Permissions boundary for bike-demand-predict-role",
+                                   Tags=[{"Key": k, "Value": v} for k, v in self.tags.items()])
+            return "created"
+        except ClientError as e:
+            if _code(e) not in ("AccessDenied", "AccessDeniedException"):
+                raise
+            raise RuntimeError(f"권한 경계 정책 {self.boundary_name} 이 없습니다. 관리자가 "
+                               "docs/iam/lambda-boundary.json 으로 먼저 만들어야 합니다") from e
 
     def model_prefix(self, model_sha: str) -> str:
         return f"models/{self.cfg['model']['version']}/{model_sha[:12]}"
@@ -170,13 +206,13 @@ class Cloud:
 
     def leftover_bucket(self, tags: dict) -> bool:
         named = re.fullmatch(re.escape(self.bucket_prefix) + "[0-9a-f]{8}", self.bucket)
-        return not tags and bool(named) and self.bucket_is_empty()
+        return not tags and (bool(named) or self.bucket == self.configured) and self.bucket_is_empty()
 
     def tag_bucket(self) -> None:
         self.s3.put_bucket_tagging(Bucket=self.bucket, Tagging={
             "TagSet": [{"Key": k, "Value": v} for k, v in self.tags.items()]})
 
-    def ensure_bucket(self) -> str:
+    def ensure_bucket(self, on_name=None) -> str:
         if self.configured and self.configured_region not in (None, self.region):
             raise RuntimeError(f"cloud.bucket {self.configured} 의 리전({self.configured_region})이 "
                                f"지금 리전({self.region})과 다릅니다")
@@ -194,6 +230,8 @@ class Cloud:
                 created = "adopted"
         else:
             self.bucket = self.configured or self.bucket_prefix + pysecrets.token_hex(4)
+            if on_name:
+                on_name()
             kwargs = {} if self.region == "us-east-1" else {
                 "CreateBucketConfiguration": {"LocationConstraint": self.region}}
             self.s3.create_bucket(Bucket=self.bucket, **kwargs)
@@ -228,11 +266,15 @@ class Cloud:
     def ensure_role(self) -> str:
         created = False
         try:
-            self.iam.get_role(RoleName=self.role)
+            role = self.iam.get_role(RoleName=self.role)["Role"]
             self.require_ours(f"IAM 역할 {self.role}", self.role_tags())
+            if (role.get("PermissionsBoundary") or {}).get("PermissionsBoundaryArn") != self.boundary_arn():
+                raise RuntimeError(f"IAM 역할 {self.role} 에 권한 경계 {self.boundary_name} 이 없습니다. "
+                                   "cleanup 후 다시 배포하세요")
         except self.iam.exceptions.NoSuchEntityException:
             self.iam.create_role(RoleName=self.role, AssumeRolePolicyDocument=json.dumps(LAMBDA_TRUST),
                                  Description="bike-demand-predict Lambda execution role",
+                                 PermissionsBoundary=self.boundary_arn(),
                                  Tags=[{"Key": k, "Value": v} for k, v in self.tags.items()])
             self.iam.get_waiter("role_exists").wait(RoleName=self.role)
             created = True
@@ -457,11 +499,20 @@ class Cloud:
 
     def role_status(self) -> dict:
         try:
-            self.iam.get_role(RoleName=self.role)
+            role = self.iam.get_role(RoleName=self.role)["Role"]
             pols = self.iam.list_role_policies(RoleName=self.role)["PolicyNames"]
-            return {"exists": True, "inline_policies": pols}
+            return {"exists": True, "inline_policies": pols,
+                    "permissions_boundary": (role.get("PermissionsBoundary") or {}).get("PermissionsBoundaryArn")}
         except self.iam.exceptions.NoSuchEntityException:
             return {"exists": False}
+
+    def boundary_status(self) -> dict:
+        try:
+            self.iam.get_policy(PolicyArn=self.boundary_arn())
+        except self.iam.exceptions.NoSuchEntityException:
+            return {"exists": False}
+        tags = {t["Key"]: t["Value"] for t in self.iam.list_policy_tags(PolicyArn=self.boundary_arn())["Tags"]}
+        return {"exists": True, "created_by_this_tool": self.ours(tags)}
 
     def _delete(self, name: str, fn, done: list) -> None:
         from botocore.exceptions import ClientError
@@ -526,6 +577,16 @@ class Cloud:
             self.iam.delete_role(RoleName=self.role)
 
         self._delete(f"iam:{self.role}", del_role, done)
+        if done[-1]["result"] not in ("deleted", "not_found"):
+            done.append({"resource": f"iam-policy:{self.boundary_name}", "result": "kept: 역할이 남아 있음"})
+            return done
+
+        def del_boundary():
+            tags = {t["Key"]: t["Value"] for t in self.iam.list_policy_tags(PolicyArn=self.boundary_arn())["Tags"]}
+            self.require_ours(f"권한 경계 정책 {self.boundary_name}", tags)
+            self.iam.delete_policy(PolicyArn=self.boundary_arn())
+
+        self._delete(f"iam-policy:{self.boundary_name}", del_boundary, done)
         return done
 
 
@@ -619,7 +680,7 @@ def _load_or_empty(path) -> dict:
 def preflight_problems(model_meta: dict, model_file_sha: str, evaluation: dict, service_check: dict,
                        package_info: dict, zip_sha: str | None, app_files: dict, requirements_sha: str,
                        criteria: dict, test_sha: str, model_mismatch: list, split_mismatch: list,
-                       lambda_cfg: dict) -> list[str]:
+                       lambda_cfg: dict, cases_sha: str) -> list[str]:
     model_sha = model_meta.get("model_sha256")
     problems = []
     if model_file_sha != model_sha:
@@ -636,6 +697,8 @@ def preflight_problems(model_meta: dict, model_file_sha: str, evaluation: dict, 
         problems.append("이 모델로 check-local 을 통과한 기록이 없음")
     elif service_check.get("app_files") != app_files:
         problems.append("check-local 이후 Lambda 코드가 바뀜")
+    elif service_check.get("cases_sha256") != cases_sha:
+        problems.append("check-local 이후 검사 사례(samples/service_cases.json)가 바뀜")
     if zip_sha is None or zip_sha != package_info.get("zip_sha256"):
         problems.append("build/lambda_package.zip 이 없거나 package.json 과 다름")
     if package_info.get("app_files") != app_files or package_info.get("requirements_sha256") != requirements_sha:
@@ -673,6 +736,7 @@ def deploy_preflight(cfg: dict, lambda_cfg: dict) -> dict:
         model_mismatch=mismatch,
         split_mismatch=split_problems(cfg, pd.read_csv(pdir / "train.csv"), pd.read_csv(pdir / "test.csv")),
         lambda_cfg=lambda_cfg,
+        cases_sha=sha256_file(ROOT / "samples" / "service_cases.json"),
     )
     if problems:
         raise RuntimeError("배포 전 확인 실패: " + "; ".join(problems)
@@ -694,8 +758,12 @@ def step_deploy(ctx) -> None:
 
     res = {"cloud": cloud.info()}
     ctx.cloud = cloud.info()
-    res["bucket"] = cloud.ensure_bucket()
+
+    def remember_bucket():
+        ctx.cloud = cloud.info()
+    res["bucket"] = cloud.ensure_bucket(on_name=remember_bucket)
     ctx.cloud = cloud.info()
+    res["permissions_boundary"] = cloud.ensure_boundary()
     res["role"] = cloud.ensure_role()
     res["log_group"] = cloud.ensure_log_group(lcfg["log_retention_days"])
 
@@ -741,12 +809,35 @@ def _cloud_invoker(ctx):
     return cloud, version, expected, invoke
 
 
+READY_RETRIES = 6
+READY_WAIT_S = 10
+
+
+def wait_until_ready(invoke) -> dict:
+    from .servicecheck import load_cases
+
+    payload = next(c["payload"] for c in load_cases() if c["name"] == "normal_one_hour")
+    for attempt in range(1, READY_RETRIES + 1):
+        resp, _ = invoke(payload)
+        err = (resp.get("body") or {}).get("error") or {}
+        message = str(err.get("message", ""))
+        permission = err.get("code") == "MODEL_LOAD_FAILED" and any(
+            s in message for s in ("403", "AccessDenied", "Forbidden"))
+        if not permission or attempt == READY_RETRIES:
+            return {"attempts": attempt, "status": resp.get("statusCode"), "waited_for_permissions": attempt > 1}
+        print(f"  모델 읽기 권한이 반영되기를 기다리는 중... ({attempt}/{READY_RETRIES})")
+        time.sleep(READY_WAIT_S)
+    return {"attempts": READY_RETRIES}
+
+
 def step_smoke(ctx) -> None:
     cloud, version, expected, invoke = _cloud_invoker(ctx)
     ctx.add_input(ROOT / "samples" / "service_cases.json")
     identity = cloud.version_identity(version)
     ctx.cloud = {**ctx.cloud, "identity": identity}
+    readiness = wait_until_ready(invoke)
     report = run_cases(invoke, expected, f"lambda:{cloud.fn}:{version}", ctx.cfg, ctx.secrets)
+    report["readiness"] = readiness
     day = sample_day_comparison(report.pop("responses"), ctx.cfg)
     report["sample_day"] = day
     report["function_version"] = version
@@ -913,6 +1004,12 @@ def _status_all(clouds: list[Cloud]) -> dict:
             "regions": {c.region: c.regional_status() for c in clouds}}
 
 
+def status_complete(resources: dict, unreachable: list[dict]) -> bool:
+    states = [resources["iam_role"].get("exists")]
+    states += [v.get("exists") for r in resources["regions"].values() for v in r.values()]
+    return None not in states and not any(u["blocking"] for u in unreachable)
+
+
 def step_status(ctx) -> None:
     name = getattr(ctx.args, "status_name", None) or "status"
     if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
@@ -922,11 +1019,14 @@ def step_status(ctx) -> None:
     st = {"checked_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
           "regions_unreachable": unreachable,
           "other_account_regions": other_account_regions(clouds[0].account), "resources": resources}
-    write_json(ctx.out(f"results/cloud/{name}.json"), st)
     ctx.cloud = {**clouds[0].info(), "regions_checked": st["regions_checked"]}
+    st["permissions_boundary"] = clouds[0].boundary_status()
+    write_json(ctx.out(f"results/cloud/{name}.json"), st)
     ctx.summary = {"iam_role": resources["iam_role"].get("exists"),
                    **{f"{r}:{k}": v.get("exists") for r, res in resources["regions"].items() for k, v in res.items()}}
     print(json.dumps(ctx.summary, ensure_ascii=False))
+    if not status_complete(resources, unreachable):
+        raise RuntimeError("일부 자원이나 리전의 상태를 확인하지 못했습니다. 결과 파일의 regions_unreachable, exists=null 항목을 보세요")
 
 
 def step_cleanup(ctx) -> None:

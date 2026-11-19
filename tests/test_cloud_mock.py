@@ -130,6 +130,9 @@ def test_cloud_steps_end_to_end(sandbox):
 
     status = read(sandbox, "results/cloud/status.json")
     assert status["resources"]["iam_role"]["exists"] is True and status["regions_unreachable"] == []
+    assert status["resources"]["iam_role"]["permissions_boundary"].endswith(":policy/bike-demand-predict-boundary")
+    assert status["permissions_boundary"] == {"exists": True, "created_by_this_tool": True}
+    assert deploy["permissions_boundary"] in ("created", "exists")
     assert all(v["exists"] is True for v in regional(status["resources"]).values())
     assert regional(status["resources"])["lambda_function"]["alias_live"] == release["function_version"]
     assert status["other_account_regions"] == []
@@ -367,11 +370,11 @@ def test_release_refuses_when_latest_smoke_failed(sandbox, monkeypatch):
 
 
 def test_profile_name_is_not_recorded(sandbox):
-    args = make_args(steps=["status"], profile="kim-personal")
+    args = make_args(steps=["status"], profile="example-profile")
     with mock_aws():
         runlog.run_steps(["status"], STEPS, load_config(), args, DEFAULT_CONFIG)
     text = (sandbox / "runs" / "run_log.jsonl").read_text(encoding="utf-8")
-    assert "kim-personal" not in text and "<PROFILE>" in text
+    assert "example-profile" not in text and "<PROFILE>" in text
 
 
 def test_cleanup_finds_other_region_from_bucket_names_alone(sandbox):
@@ -514,3 +517,61 @@ def test_bucket_name_that_only_looks_like_a_region_is_ignored(sandbox):
         assert run(["status"]) == 0
     status = read(sandbox, "results/cloud/status.json")
     assert "my-test-1" not in status["regions_checked"] and status["regions_unreachable"] == []
+
+
+def test_boundary_document_matches_docs():
+    on_disk = json.loads((ROOT / "docs" / "iam" / "lambda-boundary.json").read_text(encoding="utf-8"))
+    assert on_disk == cloud.boundary_document("bike-demand-mlops", "bike-demand-predict")
+
+
+def test_existing_role_without_boundary_is_refused(sandbox):
+    with mock_aws():
+        iam = boto3.client("iam", region_name="ap-northeast-2")
+        iam.create_role(RoleName="bike-demand-predict-role", AssumeRolePolicyDocument=json.dumps(cloud.LAMBDA_TRUST),
+                        Tags=[{"Key": k, "Value": v} for k, v in load_config()["cloud"]["tags"].items()])
+        rc = run(["deploy"])
+    assert rc == 1 and "권한 경계" in records(sandbox)[-1]["error"]
+
+
+def test_configured_bucket_left_untagged_is_adopted(sandbox):
+    cfg = load_config()
+    cfg["cloud"]["bucket"] = "bike-demand-mlops-mine"
+    with mock_aws():
+        boto3.client("s3", region_name="ap-northeast-2").create_bucket(
+            Bucket="bike-demand-mlops-mine", CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"})
+        rc = runlog.run_steps(["deploy"], STEPS, cfg, make_args(steps=["deploy"]), DEFAULT_CONFIG)
+    assert rc == 0 and read(sandbox, "results/cloud/deploy.json")["bucket"] == "adopted"
+
+
+def test_smoke_waits_for_model_permission(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "READY_WAIT_S", 0)
+    calls = {"n": 0}
+    local_invoke = cloud.Cloud.invoke
+
+    def flaky(self, payload, qualifier):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"statusCode": 500, "body": {"ok": False, "error": {
+                "code": "MODEL_LOAD_FAILED", "message": "An error occurred (403) when calling HeadObject: Forbidden"}}}, {}
+        return local_invoke(self, payload, qualifier)
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        monkeypatch.setattr(cloud.Cloud, "invoke", flaky)
+        assert run(["smoke"]) == 0
+    smoke = read(sandbox, "results/service_check/cloud.json")
+    assert smoke["readiness"]["attempts"] == 2 and smoke["readiness"]["waited_for_permissions"] is True
+
+
+def test_status_fails_when_own_region_unreachable(sandbox, monkeypatch):
+    real_init = cloud.Cloud.__init__
+    with mock_aws():
+        assert run(["deploy"], region="us-west-2") == 0
+
+        def init(self, cfg, args, ctx=None, region=None):
+            if region == "us-west-2":
+                raise RuntimeError("timeout")
+            real_init(self, cfg, args, ctx, region)
+        monkeypatch.setattr(cloud.Cloud, "__init__", init)
+        rc = run(["status"])
+    recs = records(sandbox)
+    assert rc == 1 and "확인하지 못했습니다" in recs[-1]["error"]

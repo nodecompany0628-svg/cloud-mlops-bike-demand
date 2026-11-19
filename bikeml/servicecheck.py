@@ -160,6 +160,7 @@ def step_check_local(ctx) -> None:
     ctx.add_input(ROOT / "samples" / "service_cases.json")
     report = run_cases(inv, inv.expected_model, "local", ctx.cfg)
     report["app_files"] = {arc: sha256_file(src) for arc, src in APP_FILES.items()}
+    report["cases_sha256"] = sha256_file(CASES_FILE)
     day = sample_day_comparison(report.pop("responses"), ctx.cfg)
     report["sample_day"] = day
     if day is None:

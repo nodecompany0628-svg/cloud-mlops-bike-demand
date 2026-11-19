@@ -43,6 +43,7 @@
     "profile": null,
     "function_name": "bike-demand-predict",
     "role_name": "bike-demand-predict-role",
+    "permissions_boundary": "bike-demand-predict-boundary",
     "bucket_prefix": "bike-demand-mlops",
     "lambda_config": "config/lambda.json",
     "tags": {

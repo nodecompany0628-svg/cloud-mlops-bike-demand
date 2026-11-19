@@ -25,11 +25,11 @@ def test_sanitize_hides_account_inside_tuples_and_lists():
 
 
 def test_sanitize_hides_principal_names_but_keeps_role_name():
-    msg = ("User: arn:aws:iam::1:user/kim-student is not authorized; "
+    msg = ("User: arn:aws:iam::1:user/example-user is not authorized; "
            "arn:aws:sts::1:assumed-role/Admin/me@example.com; role/bike-demand-predict-role")
     for text in (msg, json.dumps({"e": msg})):
         clean = runlog.sanitize(text, [])
-        assert "kim-student" not in clean and "me@example.com" not in clean
+        assert "example-user" not in clean and "me@example.com" not in clean
         assert "role/bike-demand-predict-role" in clean
 
 
@@ -166,7 +166,7 @@ def test_sanitize_hides_short_repo_path(monkeypatch):
 
 
 def test_sanitize_hides_account_in_arns_and_profile_names():
-    msg = ('User: arn:aws:iam::111122223333:user/kim is not authorized on arn:aws:iam::444455556666:role/X; '
+    msg = ('User: arn:aws:iam::111122223333:user/example is not authorized on arn:aws:iam::444455556666:role/X; '
            'The profile "mlops" is broken; bucket bike-demand-mlops-ap-northeast-2-1a2b3c4d')
     clean = runlog.sanitize(msg, [("profile", "mlops")])
     assert "111122223333" not in clean and "444455556666" not in clean
