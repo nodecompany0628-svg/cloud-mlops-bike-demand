@@ -81,7 +81,7 @@
 | 기준 방법 MAE | 시간대 평균 94.78, 전체 평균 170.51 대/시간. 시간대 평균보다 49.9% 낮아 합격 | 같은 파일 |
 | 서비스 검사 (로컬 핸들러) | 12/12 통과 | [results/service_check/local.json](results/service_check/local.json) |
 | 실패 처리 예시 | 합격 기준을 90%로 올린 설정에서 evaluate 실패, check-local 건너뜀, 정상 결과는 그대로 | [results/failed/](results/failed/), [runs/run_log.jsonl](runs/run_log.jsonl) |
-| 테스트 | 98개 통과 | `python -m pytest -q` |
+| 테스트 | 101개 통과 | `python -m pytest -q` |
 | Lambda 패키지 | zip 64.29MB, 압축 해제 198.94MB (한도 250MB) | [results/cloud/package.json](results/cloud/package.json) |
 | 실제 AWS 실행 | 실행 전 | [docs/cloud.md](docs/cloud.md) |
 
@@ -89,14 +89,14 @@
 
 - Python 3.12 (Lambda 런타임과 같은 버전. [uv](https://docs.astral.sh/uv/)를 쓰면 자동으로 받는다), Git
 - 확인한 환경: Windows 11, Python 3.12.13, pip 26.3, uv 0.11.16
-- 라이브러리 버전: [requirements.txt](requirements.txt)(파이프라인), [requirements-dev.txt](requirements-dev.txt)(테스트: pytest, moto), [requirements-lambda.txt](requirements-lambda.txt)(Lambda 패키지). requirements.txt와 requirements-lambda.txt의 scikit-learn, numpy 버전이 같아야 저장한 모델을 Lambda에서 불러올 수 있다.
+- 라이브러리 버전: [requirements.txt](requirements.txt)(파이프라인), [requirements-dev.txt](requirements-dev.txt)(테스트: pytest, moto), [requirements-lambda.txt](requirements-lambda.txt)(Lambda 패키지). 세 파일 모두 간접 의존성까지 버전을 고정했다(Windows 전용 패키지 2개는 `sys_platform == "win32"` 조건). requirements.txt와 requirements-lambda.txt의 scikit-learn, numpy 버전이 같아야 저장한 모델을 Lambda에서 불러올 수 있다.
 - 클라우드 단계: AWS 자격 증명을 로컬 프로필로 등록하고 [docs/iam/operator-policy.json](docs/iam/operator-policy.json) 범위의 권한을 준다. AWS CLI는 없어도 된다(boto3 사용).
 - 프로필을 지정하지 않으면 클라우드 단계는 AWS에 접속하기 전에 멈춘다. 기본 자격 증명으로 다른 계정에 배포하는 일을 막기 위해서다. 프로필(`--profile`, `AWS_PROFILE`, 설정의 `cloud.profile`)이 하나라도 지정되어 있으면 그 프로필을 쓴다. 프로필 없이 환경 변수의 키(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)를 쓰려면 `BIKEML_USE_ENV_CREDENTIALS=1`도 함께 지정해야 하고, 이때는 환경 변수의 키만 쓴다(키가 없으면 멈춘다).
 - 로컬 단계와 테스트는 AWS 없이 실행된다.
 
 ## 5. 자원 준비와 설정
 
-1. AWS에서 IAM 사용자를 만들고 [docs/iam/operator-policy.json](docs/iam/operator-policy.json)을 붙인다.
+1. AWS에서 IAM 사용자를 만들고, [docs/iam/operator-policy.json](docs/iam/operator-policy.json)으로 고객 관리형 정책을 만들어 그 사용자에게 붙인다. 이 정책은 2,048자를 넘어 사용자 인라인 정책으로는 붙일 수 없다(고객 관리형 정책 한도는 6,144자).
 2. 이 PC에 프로필로 등록한다: `aws configure --profile mlops` 또는 `~/.aws/credentials`에 직접 적는다. 키는 저장소에 넣지 않는다.
 3. 리전과 이름은 [config/pipeline.json](config/pipeline.json)의 `cloud`에서, 메모리·제한 시간·동시 실행은 [config/lambda.json](config/lambda.json)에서 바꾼다. 함수, 역할, 버킷 접두어 이름을 바꾸면 [docs/iam/operator-policy.json](docs/iam/operator-policy.json)의 자원 이름도 같이 바꿔야 한다.
 4. S3 버킷, IAM 역할, 로그 그룹, Lambda 함수는 `deploy` 단계가 만든다. 버킷 이름은 `bike-demand-mlops-<리전>-<임의 8자리>`이고, 다음 실행부터는 같은 접두어의 버킷을 찾아 다시 쓴다.
@@ -142,7 +142,7 @@ python -m bikeml runs
 ```
 
 - 전체 옵션 `--config`, `--profile`, `--region`, `--lambda-config`는 `run`, `status`, `cleanup`, `runs` 앞에 쓴다.
-- `status`, `cleanup`은 지금 리전, 이 PC에서 같은 계정으로 배포를 시작했던 리전(`.state/regions.json`, Git 제외), 실행 기록(`runs/run_log.jsonl`)에 남은 모든 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전, 이 계정에 있는 `bike-demand-mlops-<리전>-<8자리>` 버킷 이름에 든 리전을 모두 조회하고 정리한다. 그래서 `.state/`가 없는 새 폴더에서 실행해도 다른 리전에 남은 자원을 찾는다. 켜지 않은 리전처럼 인증 오류(`InvalidClientTokenId` 등)로 접속할 수 없는 리전은 `regions_unreachable`에 남기고 건너뛴다. 그 밖의 이유(일시적인 네트워크나 권한 오류)로 접속하지 못한 리전이 있으면 정리를 실패로 기록하고 IAM 역할도 남긴다. 실행 기록과 배포 기록에 남은 버킷 이름도 조회와 정리에 넣으므로, 설정에서 `cloud.bucket`을 지운 뒤에도 그 버킷을 찾는다. 다른 계정으로 배포한 기록이 남아 있으면 `cleanup`은 이 계정의 자원을 지운 뒤에도 실패로 기록하고, 그 계정의 프로필로 다시 실행하라고 알린다.
+- `status`, `cleanup`은 지금 리전 하나만 보지 않고, 상태 파일, 실행 기록, 배포 기록, 버킷 이름에서 찾은 모든 리전과 기록에 남은 버킷까지 조회하고 정리한다. 자세한 규칙은 [docs/cloud.md](docs/cloud.md) 2절에 있다.
 - 단계 하나씩도 실행할 수 있다: `python -m bikeml run evaluate`, `python -m bikeml --profile mlops run deploy smoke`
 - 한 단계가 실패하면 뒤 단계는 실행하지 않고, 실패한 결과는 `results/failed/<run_id>_<단계>/`에 따로 남는다. 실행 중 Ctrl+C로 멈춰도 그 단계는 실패로 기록된다.
 - 실패 처리 예시 재현: `python -m bikeml --config config/demo_strict_criteria.json run evaluate check-local`
