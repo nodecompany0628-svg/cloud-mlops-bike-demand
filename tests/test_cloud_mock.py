@@ -836,10 +836,52 @@ def test_renamed_config_requires_cleanup_with_old_names(sandbox, monkeypatch):
         rc_after = run_with(renamed, "status")
         rc_new_deploy = run_with(renamed, "deploy")
     recs = records(sandbox)
+    refused = failed_result(sandbox, recs[3], "results/cloud/cleanup.json")
     assert rc_deploy == 1 and "이전 이름" in recs[1]["error"] and recs[1]["cloud"] is None
     assert rc_status == 1 and rc_new == 1 and "아무것도 지우지 않았습니다" in recs[3]["error"]
+    assert refused["refused"] is True and refused["renamed_leftovers"][0]["function"] == "bike-demand-predict"
     assert functions == ["bike-demand-predict"] and len(buckets) == 1
     assert rc_old == 0 and rc_after == 0 and rc_new_deploy == 0
+
+
+def test_other_account_record_does_not_block_renaming(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        cloud.write_json(cloud.REGIONS_STATE, cloud.deployments()
+                         + [{"account": cloud.account_key("999999999999"), "region": "eu-west-1"}])
+        rc_old = run(["cleanup"])
+        rc_new = run_with(renamed_config(), "deploy")
+    assert rc_old == 1 and "다른 계정" in records(sandbox)[-2]["error"] and rc_new == 0
+
+
+def test_two_pending_name_sets_can_both_be_cleaned(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    renamed = renamed_config()
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"run_id": "y", "step": "deploy", "status": "failed", "cloud": {
+                "region": "ap-northeast-2", "function": "bike-demand-predict-2", "role": "bike-demand-predict-role",
+                "permissions_boundary": "bike-demand-predict-boundary", "bucket_prefix": "bike-demand-mlops",
+                "resources_touched": True}}) + "\n")
+        rc_old = run(["cleanup"])
+        functions = boto3.client("lambda", region_name="ap-northeast-2").list_functions()["Functions"]
+        rc_new = run_with(renamed, "cleanup")
+        rc_status = run(["status"])
+    assert rc_old == 1 and "이전 이름" in records_tolerant(sandbox)[-3]["error"] and functions == []
+    assert rc_new == 0 and rc_status == 0
+
+
+def test_deploy_refused_at_boundary_check_does_not_block_renaming(sandbox):
+    other = cloud.boundary_document("bike-demand-mlops", "other-function")
+    with mock_aws():
+        boto3.client("iam", region_name="ap-northeast-2").create_policy(
+            PolicyName="bike-demand-predict-boundary", PolicyDocument=json.dumps(other))
+        assert run(["deploy"]) == 1
+        rc = run_with(renamed_config(), "deploy")
+    error = records(sandbox)[-1]["error"]
+    assert rc == 1 and "내용이 지금 설정" in error and "이전 이름" not in error
 
 
 def test_deploy_refused_by_checks_does_not_block_renaming(sandbox):

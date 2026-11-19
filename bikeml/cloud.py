@@ -727,7 +727,7 @@ def other_account_regions(account: str) -> list[str]:
 NAME_KEYS = ("function", "role", "permissions_boundary", "bucket_prefix")
 
 
-def renamed_leftovers(cfg: dict) -> list[dict]:
+def renamed_leftovers(cfg: dict) -> tuple[list[dict], bool]:
     c = cfg["cloud"]
     current = (c["function_name"], c["role_name"], c["permissions_boundary"], c["bucket_prefix"])
     records, _ = read_run_log()
@@ -735,11 +735,13 @@ def renamed_leftovers(cfg: dict) -> list[dict]:
     for r in records:
         info = r.get("cloud") or {}
         names = tuple(info.get(k) for k in NAME_KEYS)
+        summary = r.get("summary") if isinstance(r.get("summary"), dict) else {}
         if r.get("step") == "deploy" and info.get("resources_touched") is True and names not in pending:
             pending.append(names)
-        elif r.get("step") == "cleanup" and r.get("status") == "success":
+        elif r.get("step") == "cleanup" and summary.get("all_gone") is True:
             pending = [n for n in pending if n != names]
-    return [dict(zip(NAME_KEYS, n, strict=True)) for n in pending if n != current]
+    others = [dict(zip(NAME_KEYS, n, strict=True)) for n in pending if n != current]
+    return others, current in pending
 
 
 RENAMED = ("설정의 이름(함수, 역할, 권한 경계, 버킷 접두어)을 바꾸기 전에 배포하고 아직 정리하지 않은 자원이 있습니다 {names}. "
@@ -875,7 +877,7 @@ def step_deploy(ctx) -> None:
     ctx.add_input(mpath)
     ctx.add_input(zip_path)
     ctx.model = {"name": meta["name"], "version": meta["version"], "sha256": meta["model_sha256"]}
-    renamed = renamed_leftovers(cfg)
+    renamed, _ = renamed_leftovers(cfg)
     if renamed:
         raise RuntimeError(RENAMED.format(names=renamed))
     cloud = Cloud(cfg, ctx.args, ctx)
@@ -888,12 +890,13 @@ def step_deploy(ctx) -> None:
     cloud.check_role()
     cloud.check_function()
     cloud.check_log_group()
-    marks = {"resources_touched": True}
+    marks = {}
 
     def record():
         ctx.cloud = {**cloud.info(), **marks}
-    record()
     res["permissions_boundary"] = cloud.ensure_boundary()
+    marks["resources_touched"] = True
+    record()
     res["role"] = cloud.ensure_role()
     ctx.state["role_created"] = res["role"] == "created"
 
@@ -1155,7 +1158,7 @@ def step_status(ctx) -> None:
     if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
         raise RuntimeError(f"--status-name 에는 영문, 숫자, _, - 만 쓸 수 있습니다: {name}")
     _, broken = read_run_log()
-    renamed = renamed_leftovers(ctx.cfg)
+    renamed, _ = renamed_leftovers(ctx.cfg)
     clouds, unreachable = _clouds(ctx)
     resources = _status_all(clouds)
     st = {"checked_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
@@ -1181,9 +1184,12 @@ BROKEN_RUN_LOG = ("runs/run_log.jsonl 에 읽을 수 없는 줄이 {n}개 있어
 
 def step_cleanup(ctx) -> None:
     _, broken = read_run_log()
-    renamed = renamed_leftovers(ctx.cfg)
-    if renamed:
-        raise RuntimeError(RENAMED.format(names=renamed) + ". 이전 배포와 버킷이나 역할을 같이 쓸 수 있어 아무것도 지우지 않았습니다")
+    renamed, current_pending = renamed_leftovers(ctx.cfg)
+    if renamed and not current_pending:
+        write_json(ctx.out("results/cloud/cleanup.json"), {"cleaned_at": now_iso(), "refused": True,
+                                                           "renamed_leftovers": renamed, "actions": []})
+        raise RuntimeError(RENAMED.format(names=renamed) + ". 지금 이름으로 배포한 기록이 없고, 이전 배포와 버킷이나 역할을 "
+                           "같이 쓸 수 있어 아무것도 지우지 않았습니다")
     clouds, unreachable = _clouds(ctx)
     before = _status_all(clouds)
     deleted = [d for c in clouds for d in c.cleanup_regional()]
@@ -1212,7 +1218,7 @@ def step_cleanup(ctx) -> None:
     errors = [d for d in deleted if d["result"].startswith("error")]
     others = other_account_regions(clouds[0].account)
     report = {"cleaned_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
-              "regions_unreachable": unreachable, "run_log_unreadable_lines": broken,
+              "regions_unreachable": unreachable, "run_log_unreadable_lines": broken, "renamed_leftovers": renamed,
               "before": before, "actions": deleted, "errors": errors, "after": after,
               "all_gone": all_gone(after) and not own_unreachable and not broken, "other_account_regions": others}
     write_json(ctx.out("results/cloud/cleanup.json"), report)
@@ -1229,6 +1235,8 @@ def step_cleanup(ctx) -> None:
         problems.append(f"남았거나 확인하지 못한 자원 {left}")
     if errors:
         problems.append("삭제 중 오류 " + ", ".join(f"{d['resource']} {d['result']}" for d in errors))
+    if renamed:
+        problems.append(RENAMED.format(names=renamed).replace("먼저 ", ""))
     if problems:
         raise RuntimeError("정리를 끝내지 못했습니다. " + " / ".join(problems)
                            + ". 자세한 내용은 cleanup.json 의 actions, after 를 보세요")
