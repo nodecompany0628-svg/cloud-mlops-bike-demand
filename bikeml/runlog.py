@@ -82,7 +82,7 @@ PROFILE_IN_ERROR = re.compile(r"(profile \()[^)]*(\))")
 PROFILE_QUOTED = re.compile(r"(profile \")[^\"]*(\")")
 PROFILE_LIST = re.compile(r"(profiles: \[)[^\]]*(\])")
 ARN_ACCOUNT = re.compile(r"(arn:aws[\w-]*:[\w-]*:[\w-]*:)\d{12}")
-PRINCIPAL = re.compile(r"((?:user|assumed-role|federated-user)/)[^\s\\\"',;)]+")
+PRINCIPAL = re.compile(r"(:(?:user|assumed-role|federated-user)/)[^\s\\\"',;)]+")
 
 
 def _user_pattern() -> re.Pattern | None:

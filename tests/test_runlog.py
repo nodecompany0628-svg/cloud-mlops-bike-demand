@@ -240,3 +240,9 @@ def test_error_text_hides_folder_of_external_config(isolated):
     error_txt = (isolated / "results" / "failed" / f"{rec['run_id']}_bad" / "error.txt").read_text(encoding="utf-8")
     assert "<EXTERNAL>" in rec["error"] and "zz_bikeml_external" not in json.dumps(rec)
     assert "zz_bikeml_external" not in error_txt
+
+
+def test_principal_pattern_only_touches_arns():
+    uri = "s3://bike-demand-mlops-x/models/v2-user/abc123def456/model.joblib?versionId=xyz"
+    assert runlog.sanitize(uri, []) == uri
+    assert runlog.sanitize("arn:aws:iam::1:user/someone", []).endswith(":user/<NAME>")

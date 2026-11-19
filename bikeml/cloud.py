@@ -178,11 +178,14 @@ class Cloud:
     def find_buckets(self) -> list[str]:
         return sorted(n for n in self.all_bucket_names() if n.startswith(self.bucket_prefix))
 
+    def name_region(self, name: str) -> str | None:
+        m = re.fullmatch(re.escape(self.bucket_base) + r"-([a-z]{2}(?:-[a-z]+)+-\d+)-[0-9a-f]{8}", name)
+        if m and m.group(1) in set(self.session.get_available_regions("lambda")):
+            return m.group(1)
+        return None
+
     def bucket_regions(self) -> set[str]:
-        known = set(self.session.get_available_regions("lambda"))
-        pattern = re.compile(re.escape(self.bucket_base) + r"-([a-z]{2}(?:-[a-z]+)+-\d+)-[0-9a-f]{8}")
-        found = {m.group(1) for n in self.all_bucket_names() if (m := pattern.fullmatch(n))}
-        return found & known
+        return {r for n in self.all_bucket_names() if (r := self.name_region(n))}
 
     def bucket_region(self, name: str) -> str | None:
         from botocore.exceptions import ClientError
@@ -741,7 +744,8 @@ def renamed_leftovers(cfg: dict) -> tuple[list[dict], bool]:
         info = r.get("cloud") or {}
         names = tuple(info.get(k) for k in NAME_KEYS)
         summary = r.get("summary") if isinstance(r.get("summary"), dict) else {}
-        if r.get("step") == "deploy" and info.get("resources_touched") is True and names not in pending:
+        complete = all(isinstance(n, str) and n for n in names)
+        if r.get("step") == "deploy" and info.get("resources_touched") is True and complete and names not in pending:
             pending.append(names)
         elif r.get("step") == "cleanup" and summary.get("all_gone") is True:
             pending = [n for n in pending if n != names]
@@ -1105,7 +1109,11 @@ NOT_ENABLED = {"InvalidClientTokenId", "UnrecognizedClientException", "AuthFailu
 
 def recorded_buckets() -> set[str]:
     records, _ = read_run_log()
-    names = {(r.get("cloud") or {}).get("bucket") for r in records}
+    names = set()
+    for r in records:
+        info = r.get("cloud") or {}
+        if r.get("step") == "deploy" and info.get("resources_touched") is True:
+            names |= {info.get("bucket"), info.get("creating_bucket")}
     for name in ("deploy.json", "deploy_override.json"):
         path = RESULTS / "cloud" / name
         if path.exists():
@@ -1120,23 +1128,27 @@ def _clouds(ctx) -> tuple[list[Cloud], list[dict]]:
     from botocore.exceptions import ClientError
 
     first = Cloud(ctx.cfg, ctx.args, ctx)
-    extra = {}
-    for name in recorded_buckets():
-        if name.startswith(f"{first.bucket_base}-"):
+    owned = set(first.all_bucket_names())
+    extra, unreachable = {}, []
+    for name in sorted(recorded_buckets()):
+        if not name.startswith(f"{first.bucket_base}-") or name not in owned:
+            continue
+        region = first.name_region(name)
+        if region is None:
             try:
                 region = first.bucket_region(name)
             except ClientError as e:
-                if _code(e) not in ("AccessDenied", "403", "AllAccessDisabled"):
-                    raise
-                region = None
-            if region:
-                extra.setdefault(region, set()).add(name)
+                unreachable.append({"region": None, "bucket": name, "own": True, "blocking": True,
+                                    "error": f"{type(e).__name__}: {e}"})
+                continue
+        if region:
+            extra.setdefault(region, set()).add(name)
     own = first.bucket_regions() | set(extra)
     own |= {d["region"] for d in deployments() if d["account"] == account_key(first.account)}
     if first.configured_region:
         own.add(first.configured_region)
     regions = set(known_regions(ctx.cfg, ctx.args, first.account)) | own
-    clouds, unreachable = [first], []
+    clouds = [first]
     for r in sorted(regions - {first.region}):
         try:
             clouds.append(Cloud(ctx.cfg, ctx.args, ctx, region=r))
@@ -1204,12 +1216,12 @@ def step_cleanup(ctx) -> None:
     clouds, unreachable = _clouds(ctx)
     before = _status_all(clouds)
     deleted = [d for c in clouds for d in c.cleanup_regional()]
-    own_unreachable = [u["region"] for u in unreachable if u["blocking"]]
+    own_unreachable = [u.get("bucket") or u["region"] for u in unreachable if u["blocking"]]
     keep_reasons = []
     if not all(d["result"] in ("deleted", "not_found") for d in deleted):
         keep_reasons.append("지역 자원이 남았거나 상태를 다 확인하지 못함")
     if own_unreachable:
-        keep_reasons.append(f"접속하지 못한 리전 {own_unreachable}")
+        keep_reasons.append(f"접속하지 못한 리전이나 위치를 확인하지 못한 버킷 {own_unreachable}")
     if broken:
         keep_reasons.append("실행 기록에 읽을 수 없는 줄이 있음")
     role_gone = False
@@ -1238,7 +1250,7 @@ def step_cleanup(ctx) -> None:
                    "other_account_regions": others}
     problems = []
     if own_unreachable:
-        problems.append(f"접속하지 못한 리전 {own_unreachable}")
+        problems.append(f"접속하지 못한 리전이나 위치를 확인하지 못한 버킷 {own_unreachable}")
     if broken:
         problems.append(BROKEN_RUN_LOG.format(n=broken))
     left = remaining(after)

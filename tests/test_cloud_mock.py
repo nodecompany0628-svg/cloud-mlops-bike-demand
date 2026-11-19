@@ -515,7 +515,8 @@ def test_recorded_bucket_of_another_account_is_skipped(sandbox, monkeypatch):
     runlog.RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
     with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps({"run_id": "x", "step": "deploy", "status": "success",
-                            "cloud": {"region": "ap-northeast-2", "bucket": "bike-demand-mlops-theirs"}}) + "\n")
+                            "cloud": {"region": "ap-northeast-2", "bucket": "bike-demand-mlops-theirs",
+                                      "resources_touched": True}}) + "\n")
 
     def region(self, name):
         if name == "bike-demand-mlops-theirs":
@@ -940,3 +941,53 @@ def test_deploy_refuses_while_run_log_has_unreadable_lines(sandbox):
         rc = run(["deploy"])
         buckets = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
     assert rc == 1 and "읽을 수 없는 줄" in records_tolerant(sandbox)[-1]["error"] and buckets == []
+
+
+def test_user_bucket_named_by_refused_deploy_leaves_cleanup_scope(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    cfg = load_config()
+    cfg["cloud"]["bucket"] = "bike-demand-mlops-users-own"
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="ap-northeast-2")
+        s3.create_bucket(Bucket="bike-demand-mlops-users-own",
+                         CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"})
+        s3.put_object(Bucket="bike-demand-mlops-users-own", Key="mine.txt", Body=b"x")
+        run_with(cfg, "status")
+        assert run_with(cfg, "deploy") == 1
+        assert run(["deploy"]) == 0
+        rc = run(["cleanup"])
+        left = [b["Name"] for b in s3.list_buckets()["Buckets"]]
+    assert rc == 0 and left == ["bike-demand-mlops-users-own"]
+
+
+def test_own_recorded_bucket_with_unknown_location_blocks_cleanup(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    cfg = load_config()
+    cfg["cloud"]["bucket"] = "bike-demand-mlops-mine"
+    with mock_aws():
+        assert run_with(cfg, "deploy") == 0
+
+        def denied(self, name):
+            raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "GetBucketLocation")
+        monkeypatch.setattr(cloud.Cloud, "bucket_region", denied)
+        rc = run(["cleanup"])
+        left = [b["Name"] for b in boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]]
+        roles = [r["RoleName"] for r in boto3.client("iam", region_name="ap-northeast-2").list_roles()["Roles"]]
+    assert rc == 1 and "bike-demand-mlops-mine" in records(sandbox)[-1]["error"]
+    assert left == ["bike-demand-mlops-mine"] and roles == ["bike-demand-predict-role"]
+
+
+def test_release_rejects_same_version_with_other_revision(sandbox, monkeypatch):
+    with mock_aws():
+        assert run(["deploy", "smoke", "cloud-eval"]) == 0
+        real_client = boto3.Session.client
+
+        def client(self, name, *a, **kw):
+            c = real_client(self, name, *a, **kw)
+            if name == "lambda":
+                real_get = c.get_function_configuration
+                c.get_function_configuration = lambda **kwargs: {**real_get(**kwargs), "RevisionId": "recreated"}
+            return c
+        monkeypatch.setattr(boto3.Session, "client", client)
+        rc = run(["release"])
+    assert rc == 1 and "smoke" in records(sandbox)[-1]["error"]
