@@ -2,7 +2,7 @@
 
 클라우드 MLOps 대체 실습과제. 공공 자전거 운영 담당자가 다음 날의 날씨 예보를 넣으면 시간대별 대여 건수를 돌려주는 예측 서비스다. 공개 데이터로 모델을 직접 학습했고 AWS Lambda에서 실행한다. 데이터 준비부터 학습, 평가, 배포, 검사까지는 `run` 명령으로 단계를 순서대로 실행하고, 자원 정리는 `cleanup` 명령으로 한다. 단계마다 실행 기록을 남긴다.
 
-진행 상태 (2026-11-19)
+진행 상태 (2026-11-20)
 
 - 실행함: 데이터 받기와 점검, 분할, 학습, 평가, 로컬 서비스 검사, 테스트, Lambda 배포 패키지 빌드, 실패 처리 예시(엄격한 합격 기준으로 평가 실패)
 - 모의 AWS(moto)로만 확인함: 자원 생성과 배포, 버전 게시, `live` 별칭(release), 상태 조회, 정리 흐름. 이 테스트에서는 배포 전 확인을 대체하고, 작은 가짜 zip을 올리고, Lambda 호출을 로컬 핸들러로 대신한다.
@@ -81,7 +81,7 @@
 | 기준 방법 MAE | 시간대 평균 94.78, 전체 평균 170.51 대/시간. 시간대 평균보다 49.9% 낮아 합격 | 같은 파일 |
 | 서비스 검사 (로컬 핸들러) | 12/12 통과 | [results/service_check/local.json](results/service_check/local.json) |
 | 실패 처리 예시 | 합격 기준을 90%로 올린 설정에서 evaluate 실패, check-local 건너뜀, 정상 결과는 그대로 | [results/failed/](results/failed/), [runs/run_log.jsonl](runs/run_log.jsonl) |
-| 테스트 | 91개 통과 | `python -m pytest -q` |
+| 테스트 | 94개 통과 | `python -m pytest -q` |
 | Lambda 패키지 | zip 64.29MB, 압축 해제 198.94MB (한도 250MB) | [results/cloud/package.json](results/cloud/package.json) |
 | 실제 AWS 실행 | 실행 전 | [docs/cloud.md](docs/cloud.md) |
 
@@ -98,7 +98,7 @@
 
 1. AWS에서 IAM 사용자를 만들고 [docs/iam/operator-policy.json](docs/iam/operator-policy.json)을 붙인다.
 2. 이 PC에 프로필로 등록한다: `aws configure --profile mlops` 또는 `~/.aws/credentials`에 직접 적는다. 키는 저장소에 넣지 않는다.
-3. 리전과 이름은 [config/pipeline.json](config/pipeline.json)의 `cloud`에서, 메모리·제한 시간·동시 실행은 [config/lambda.json](config/lambda.json)에서 바꾼다.
+3. 리전과 이름은 [config/pipeline.json](config/pipeline.json)의 `cloud`에서, 메모리·제한 시간·동시 실행은 [config/lambda.json](config/lambda.json)에서 바꾼다. 함수, 역할, 버킷 접두어 이름을 바꾸면 [docs/iam/operator-policy.json](docs/iam/operator-policy.json)의 자원 이름도 같이 바꿔야 한다.
 4. S3 버킷, IAM 역할, 로그 그룹, Lambda 함수는 `deploy` 단계가 만든다. 버킷 이름은 `bike-demand-mlops-<리전>-<임의 8자리>`이고, 다음 실행부터는 같은 접두어의 버킷을 찾아 다시 쓴다.
 
 ## 6. 설치
@@ -142,7 +142,7 @@ python -m bikeml runs
 ```
 
 - 전체 옵션 `--config`, `--profile`, `--region`, `--lambda-config`는 `run`, `status`, `cleanup`, `runs` 앞에 쓴다.
-- `status`, `cleanup`은 지금 리전, 이 PC에서 같은 계정으로 배포를 시작했던 리전(`.state/regions.json`, Git 제외), 실행 기록(`runs/run_log.jsonl`)에 남은 모든 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전, 이 계정에 있는 `bike-demand-mlops-<리전>-<8자리>` 버킷 이름에 든 리전을 모두 조회하고 정리한다. 그래서 `.state/`가 없는 새 폴더에서 실행해도 다른 리전에 남은 자원을 찾는다. 다른 계정으로 배포한 기록이 남아 있으면 `cleanup`은 이 계정의 자원을 지운 뒤에도 실패로 기록하고, 그 계정의 프로필로 다시 실행하라고 알린다.
+- `status`, `cleanup`은 지금 리전, 이 PC에서 같은 계정으로 배포를 시작했던 리전(`.state/regions.json`, Git 제외), 실행 기록(`runs/run_log.jsonl`)에 남은 모든 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전, 이 계정에 있는 `bike-demand-mlops-<리전>-<8자리>` 버킷 이름에 든 리전을 모두 조회하고 정리한다. 그래서 `.state/`가 없는 새 폴더에서 실행해도 다른 리전에 남은 자원을 찾는다. 이 계정에서 쓸 수 없는 리전은 `regions_unreachable`에 남기고 건너뛰는데, 이 계정의 상태 파일이나 버킷 이름에서 찾은 리전에 접속하지 못하면 정리를 실패로 기록한다. 다른 계정으로 배포한 기록이 남아 있으면 `cleanup`은 이 계정의 자원을 지운 뒤에도 실패로 기록하고, 그 계정의 프로필로 다시 실행하라고 알린다.
 - 단계 하나씩도 실행할 수 있다: `python -m bikeml run evaluate`, `python -m bikeml --profile mlops run deploy smoke`
 - 한 단계가 실패하면 뒤 단계는 실행하지 않고, 실패한 결과는 `results/failed/<run_id>_<단계>/`에 따로 남는다. 실행 중 Ctrl+C로 멈춰도 그 단계는 실패로 기록된다.
 - 실패 처리 예시 재현: `python -m bikeml --config config/demo_strict_criteria.json run evaluate check-local`
