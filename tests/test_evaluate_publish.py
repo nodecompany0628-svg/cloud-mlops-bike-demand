@@ -72,3 +72,18 @@ def test_passing_candidate_is_published(isolated):
     assert sha256_file(published / "model.joblib") == sha
     metrics = json.loads((root / "results" / "evaluation" / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["passed"] and metrics["model_source"] == "candidate" and metrics["model"]["sha256"] == sha
+
+
+def test_stale_candidate_is_rejected(isolated):
+    root, published, candidate = isolated
+    good = joblib.load(GOOD_MODEL / "model.joblib")
+    write_candidate(candidate, good)
+    meta = json.loads((candidate / "metadata.json").read_text(encoding="utf-8"))
+    meta["train_data"]["sha256"] = "0" * 64
+    (candidate / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+    before = sha256_file(published / "model.joblib")
+
+    assert run_evaluate() == 1
+    rec = [json.loads(x) for x in (root / "runs" / "run_log.jsonl").read_text(encoding="utf-8").splitlines()][-1]
+    assert "train" in rec["error"] and "학습 자료" in rec["error"]
+    assert sha256_file(published / "model.joblib") == before

@@ -66,7 +66,8 @@ def sandbox(tmp_path, monkeypatch):
         z.writestr("lambda_function.py", "def lambda_handler(event, context):\n    return {}\n")
     meta = load_json(model_dir(load_config()) / "metadata.json")
     monkeypatch.setattr(cloud, "deploy_preflight",
-                        lambda cfg: {"meta": meta, "zip_sha256": sha256_file(pkg), "zip_path": pkg})
+                        lambda cfg, lcfg: {"meta": meta, "zip_sha256": sha256_file(pkg), "zip_path": pkg})
+    monkeypatch.setattr(cloud, "REGIONS_STATE", tmp_path / "state" / "regions.json")
 
     local = LocalInvoker(load_config())
 
@@ -86,8 +87,12 @@ def read(tmp_path, rel_path):
     return json.loads((tmp_path / "promoted" / rel_path).read_text(encoding="utf-8"))
 
 
-def run(steps):
-    return runlog.run_steps(steps, STEPS, load_config(), make_args(steps=steps), DEFAULT_CONFIG)
+def run(steps, **kw):
+    return runlog.run_steps(steps, STEPS, load_config(), make_args(steps=steps, **kw), DEFAULT_CONFIG)
+
+
+def regional(resources, region="ap-northeast-2"):
+    return resources["regions"][region]
 
 
 def test_cloud_steps_end_to_end(sandbox):
@@ -117,8 +122,9 @@ def test_cloud_steps_end_to_end(sandbox):
     assert ev["metrics_cloud"]["mae"] == ev["metrics_local"]["mae"]
 
     status = read(sandbox, "results/cloud/status.json")
-    assert all(v["exists"] is True for v in status["resources"].values())
-    assert status["resources"]["lambda_function"]["alias_live"] == smoke["alias"]["version"]
+    assert status["resources"]["iam_role"]["exists"] is True
+    assert all(v["exists"] is True for v in regional(status["resources"]).values())
+    assert regional(status["resources"])["lambda_function"]["alias_live"] == smoke["alias"]["version"]
 
     clean = read(sandbox, "results/cloud/cleanup.json")
     assert clean["all_gone"] and all(a["result"] == "deleted" for a in clean["actions"])
@@ -145,17 +151,31 @@ def test_bucket_without_project_tags_is_left_alone(sandbox, monkeypatch):
     assert rc_clean == 1 and keys == ["keep.txt"]
 
 
-def test_status_and_cleanup_refuse_other_region(sandbox, monkeypatch):
-    fake_root = sandbox / "root"
-    (fake_root / "results" / "cloud").mkdir(parents=True)
-    (fake_root / "results" / "cloud" / "deploy.json").write_text(
-        json.dumps({"cloud": {"region": "us-west-2"}}), encoding="utf-8")
-    monkeypatch.setattr(cloud, "ROOT", fake_root)
+def test_cleanup_also_covers_region_used_by_earlier_deploy(sandbox):
     with mock_aws():
+        assert run(["deploy"], region="us-west-2") == 0
         rc = run(["status", "cleanup"])
+        west = boto3.client("lambda", region_name="us-west-2").list_functions()["Functions"]
+        buckets = boto3.client("s3", region_name="us-west-2").list_buckets()["Buckets"]
+    assert rc == 0
+    status = read(sandbox, "results/cloud/status.json")
+    assert sorted(status["regions_checked"]) == ["ap-northeast-2", "us-west-2"]
+    assert regional(status["resources"], "us-west-2")["lambda_function"]["exists"] is True
+    clean = read(sandbox, "results/cloud/cleanup.json")
+    assert clean["all_gone"] and west == [] and buckets == []
+
+
+def test_role_without_project_tags_is_left_alone(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        iam = boto3.client("iam", region_name="ap-northeast-2")
+        iam.create_role(RoleName="bike-demand-predict-role", AssumeRolePolicyDocument=json.dumps(cloud.LAMBDA_TRUST))
+        rc_deploy = run(["deploy"])
+        rc_clean = run(["cleanup"])
+        roles = [r["RoleName"] for r in iam.list_roles()["Roles"]]
     recs = records(sandbox)
-    assert rc == 1 and [r["status"] for r in recs] == ["failed", "skipped"]
-    assert "us-west-2" in recs[0]["error"]
+    assert rc_deploy == 1 and "IAM 역할" in recs[0]["error"]
+    assert rc_clean == 1 and "bike-demand-predict-role" in roles
 
 
 def test_override_deploy_is_recorded_separately(sandbox):
@@ -198,11 +218,11 @@ def test_cleanup_fails_when_bucket_state_is_unknown(sandbox, monkeypatch):
     assert rc == 1 and recs[-1]["status"] == "failed"
     failed = sandbox / "failed" / f"{recs[-1]['run_id']}_cleanup" / "results" / "cloud" / "cleanup.json"
     report = json.loads(failed.read_text(encoding="utf-8"))
-    assert report["all_gone"] is False and report["after"]["s3_bucket"]["exists"] is None
+    assert report["all_gone"] is False and regional(report["after"])["s3_bucket"]["exists"] is None
 
 
 def test_deploy_stops_before_aws_when_preflight_fails(sandbox, monkeypatch):
-    def refuse(cfg):
+    def refuse(cfg, lcfg):
         raise RuntimeError("배포 전 확인 실패: 이 모델로 evaluate 를 통과한 기록이 없음")
     monkeypatch.setattr(cloud, "deploy_preflight", refuse)
     with mock_aws():
@@ -223,3 +243,13 @@ def test_cloud_step_requires_explicit_profile(sandbox, monkeypatch):
     assert [r["status"] for r in recs] == ["failed", "skipped"]
     assert "AWS 프로필" in recs[0]["error"]
     assert (sandbox / "failed" / f"{recs[0]['run_id']}_status" / "error.txt").exists()
+
+
+def test_env_credentials_opt_in_requires_env_keys(sandbox, monkeypatch):
+    for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+        monkeypatch.delenv(k)
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(sandbox / "none-credentials"))
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(sandbox / "none-config"))
+    rc = run(["status"])
+    recs = records(sandbox)
+    assert rc == 1 and "AWS_ACCESS_KEY_ID" in recs[0]["error"]

@@ -41,7 +41,8 @@
         "iam:PutRolePolicy",
         "iam:ListRolePolicies",
         "iam:DeleteRolePolicy",
-        "iam:DeleteRole"
+        "iam:DeleteRole",
+        "iam:ListRoleTags"
       ],
       "Resource": "arn:aws:iam::*:role/bike-demand-predict-role"
     },
@@ -73,7 +74,8 @@
         "lambda:GetAlias",
         "lambda:InvokeFunction",
         "lambda:TagResource",
-        "lambda:DeleteFunction"
+        "lambda:DeleteFunction",
+        "lambda:ListTags"
       ],
       "Resource": [
         "arn:aws:lambda:*:*:function:bike-demand-predict",
@@ -90,7 +92,9 @@
         "logs:TagLogGroup",
         "logs:FilterLogEvents",
         "logs:GetLogEvents",
-        "logs:DeleteLogGroup"
+        "logs:DeleteLogGroup",
+        "logs:ListTagsLogGroup",
+        "logs:ListTagsForResource"
       ],
       "Resource": "arn:aws:logs:*:*:log-group:/aws/lambda/bike-demand-predict*"
     },

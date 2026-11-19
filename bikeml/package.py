@@ -20,7 +20,10 @@ APP_FILES = {
     "bikeml/features.py": ROOT / "bikeml" / "features.py",
     "bikeml/service.py": ROOT / "bikeml" / "service.py",
 }
-PLATFORMS = ["manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64"]
+PLATFORMS = {
+    "x86_64": ["manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64"],
+    "arm64": ["manylinux_2_28_aarch64", "manylinux_2_17_aarch64", "manylinux2014_aarch64"],
+}
 UNZIPPED_LIMIT = 250 * 1024 * 1024
 FIXED_TIME = (2020, 1, 1, 0, 0, 0)
 
@@ -37,7 +40,8 @@ def build_package(lambda_cfg: dict) -> dict:
     cmd = [sys.executable, "-m", "pip", "install", "--quiet", "--no-compile",
            "--target", str(PKG_DIR), "--implementation", "cp", "--python-version", py,
            "--only-binary=:all:", "-r", str(REQUIREMENTS)]
-    for plat in PLATFORMS:
+    platforms = PLATFORMS[lambda_cfg["architecture"]]
+    for plat in platforms:
         cmd += ["--platform", plat]
     subprocess.run(cmd, check=True)
 
@@ -90,8 +94,9 @@ def build_package(lambda_cfg: dict) -> dict:
         "removed_test_dirs_mb": round(removed / 1e6, 2),
         "file_count": len(files),
         "runtime": lambda_cfg["runtime"],
+        "architecture": lambda_cfg["architecture"],
         "precompiled_pyc": precompiled,
-        "platforms": PLATFORMS,
+        "platforms": platforms,
         "installed": installed,
         "app_files": {arc: sha256_file(src) for arc, src in APP_FILES.items()},
         "requirements_sha256": sha256_file(REQUIREMENTS),

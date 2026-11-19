@@ -66,10 +66,18 @@ def step_evaluate(ctx) -> None:
     for p in (pdir / "train.csv", pdir / "test.csv", mpath):
         ctx.add_input(p)
 
+    stale = [name for name, ok in (
+        ("학습 자료", (meta.get("train_data") or {}).get("sha256") == sha256_file(pdir / "train.csv")),
+        ("하이퍼파라미터", meta.get("params") == cfg["model"]["params"]),
+        ("모델 버전", meta.get("version") == cfg["model"]["version"]),
+    ) if not ok]
+    if stale:
+        raise RuntimeError(f"평가할 모델({source})이 지금 설정과 다릅니다({', '.join(stale)}). train 을 먼저 실행하세요")
+
     train = pd.read_csv(pdir / "train.csv")
     test = pd.read_csv(pdir / "test.csv")
     X_train = np.asarray(feature_matrix(train), dtype=float)
-    X_test = np.asarray(feature_matrix(test), dtype=float)
+    X_test = np.asarray(feature_matrix(test, allow_missing_humidity=False), dtype=float)
     y = test[TARGET].to_numpy(dtype=float)
 
     pred = np.round(np.clip(model.predict(X_test), 0, None), 2)

@@ -137,3 +137,15 @@ def test_promote_rolls_back_on_interrupt(isolated, monkeypatch):
     for name in ("a.txt", "b.txt"):
         assert (isolated / "results" / name).read_text(encoding="utf-8") == "old"
     assert not list((isolated / "results").glob("*.promote-bak"))
+
+
+def test_sanitize_ignores_root_home(monkeypatch):
+    monkeypatch.setattr(runlog.Path, "home", classmethod(lambda cls: Path("/")))
+    assert runlog.sanitize("data/processed/train.csv", []) == "data/processed/train.csv"
+
+
+def test_load_json_accepts_bom(tmp_path):
+    from bikeml.common import load_json
+    p = tmp_path / "c.json"
+    p.write_bytes(b"\xef\xbb\xbf" + json.dumps({"a": 1}).encode("utf-8"))
+    assert load_json(p) == {"a": 1}

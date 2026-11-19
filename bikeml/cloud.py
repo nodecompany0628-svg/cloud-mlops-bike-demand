@@ -27,30 +27,46 @@ LAMBDA_TRUST = {
     "Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"},
                    "Action": "sts:AssumeRole"}],
 }
-NOT_FOUND = {"404", "NoSuchBucket", "NotFound", "ResourceNotFoundException", "NoSuchEntity"}
+NOT_FOUND = {"404", "NoSuchBucket", "NotFound", "NoSuchKey", "ResourceNotFoundException", "NoSuchEntity"}
 STATUS_RETRIES = 10
 STATUS_WAIT_S = 3
 UPLOAD_RETRIES = 30
 UPLOAD_WAIT_S = 30
 ALIAS = "live"
+FUNCTION_DESCRIPTION = "bike-demand hourly rental prediction"
+REGIONS_STATE = ROOT / ".state" / "regions.json"
+
+
+class NotOurs(Exception):
+    pass
 
 
 def _code(e) -> str:
     return e.response.get("Error", {}).get("Code", "")
 
 
-class Cloud:
-    def __init__(self, cfg: dict, args, ctx=None):
-        import boto3
+def make_session(profile: str | None, region: str):
+    import boto3
 
+    if profile:
+        return boto3.Session(profile_name=profile, region_name=region)
+    if os.environ.get("BIKEML_USE_ENV_CREDENTIALS") != "1":
+        raise RuntimeError("AWS 프로필을 --profile 또는 환경 변수 AWS_PROFILE 로 지정하세요. "
+                           "환경 변수의 키를 쓰려면 BIKEML_USE_ENV_CREDENTIALS=1 을 함께 지정하세요")
+    key, secret = os.environ.get("AWS_ACCESS_KEY_ID"), os.environ.get("AWS_SECRET_ACCESS_KEY")
+    if not key or not secret:
+        raise RuntimeError("BIKEML_USE_ENV_CREDENTIALS=1 이지만 AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY 가 없습니다")
+    return boto3.Session(aws_access_key_id=key, aws_secret_access_key=secret,
+                         aws_session_token=os.environ.get("AWS_SESSION_TOKEN"), region_name=region)
+
+
+class Cloud:
+    def __init__(self, cfg: dict, args, ctx=None, region: str | None = None):
         self.cfg = cfg
         c = cfg["cloud"]
         self.profile = resolve_profile(cfg, getattr(args, "profile", None))
-        self.region = resolve_region(cfg, getattr(args, "region", None))
-        if not self.profile and os.environ.get("BIKEML_USE_ENV_CREDENTIALS") != "1":
-            raise RuntimeError("AWS 프로필을 --profile 또는 환경 변수 AWS_PROFILE 로 지정하세요. "
-                               "환경 변수의 키를 쓰려면 BIKEML_USE_ENV_CREDENTIALS=1 을 함께 지정하세요")
-        self.session = boto3.Session(profile_name=self.profile, region_name=self.region)
+        self.region = region or resolve_region(cfg, getattr(args, "region", None))
+        self.session = make_session(self.profile, self.region)
         ident = self.session.client("sts").get_caller_identity()
         self.account = ident["Account"]
         self.caller_type = ident["Arn"].split(":", 5)[5].split("/")[0]
@@ -81,6 +97,9 @@ class Cloud:
     def model_key(self) -> str:
         return f"models/{self.cfg['model']['version']}/model.joblib"
 
+    def ours(self, tags: dict) -> bool:
+        return all(tags.get(k) == v for k, v in self.tags.items())
+
     def find_bucket(self) -> str | None:
         names = []
         for page in self.s3.get_paginator("list_buckets").paginate():
@@ -89,26 +108,34 @@ class Cloud:
             raise RuntimeError(f"버킷이 여러 개입니다 {names}. config/pipeline.json 의 cloud.bucket 에 하나를 적으세요")
         return names[0] if names else None
 
-    def bucket_is_ours(self) -> bool:
+    def bucket_tags(self) -> dict:
         from botocore.exceptions import ClientError
 
         try:
-            tags = self.s3.get_bucket_tagging(Bucket=self.bucket)["TagSet"]
+            return {t["Key"]: t["Value"] for t in self.s3.get_bucket_tagging(Bucket=self.bucket)["TagSet"]}
         except ClientError as e:
             if _code(e) in ("NoSuchTagSet", "NoSuchTagSetError"):
-                return False
+                return {}
             raise
-        have = {t["Key"]: t["Value"] for t in tags}
-        return all(have.get(k) == v for k, v in self.tags.items())
 
-    def require_ours(self) -> None:
-        if not self.bucket_is_ours():
-            raise RuntimeError(f"버킷 {self.bucket} 에 이 과제의 태그가 없어 건드리지 않습니다")
+    def role_tags(self) -> dict:
+        return {t["Key"]: t["Value"] for t in self.iam.list_role_tags(RoleName=self.role)["Tags"]}
+
+    def function_tags(self) -> dict:
+        arn = self.lam.get_function(FunctionName=self.fn)["Configuration"]["FunctionArn"]
+        return self.lam.list_tags(Resource=arn).get("Tags", {})
+
+    def log_group_tags(self) -> dict:
+        return self.logs.list_tags_log_group(logGroupName=self.log_group).get("tags", {})
+
+    def require_ours(self, kind: str, tags: dict) -> None:
+        if not self.ours(tags):
+            raise NotOurs(f"{kind} 에 이 과제의 태그가 없어 건드리지 않습니다")
 
     def ensure_bucket(self) -> str:
         if self.bucket:
             self.s3.head_bucket(Bucket=self.bucket)
-            self.require_ours()
+            self.require_ours(f"버킷 {self.bucket}", self.bucket_tags())
             created = False
         else:
             self.bucket = self.bucket_prefix + pysecrets.token_hex(4)
@@ -147,13 +174,14 @@ class Cloud:
         created = False
         try:
             self.iam.get_role(RoleName=self.role)
+            self.require_ours(f"IAM 역할 {self.role}", self.role_tags())
         except self.iam.exceptions.NoSuchEntityException:
             self.iam.create_role(RoleName=self.role, AssumeRolePolicyDocument=json.dumps(LAMBDA_TRUST),
                                  Description="bike-demand-predict Lambda execution role",
                                  Tags=[{"Key": k, "Value": v} for k, v in self.tags.items()])
             self.iam.get_waiter("role_exists").wait(RoleName=self.role)
             created = True
-        self.iam.put_role_policy(RoleName=self.role, PolicyName="bike-demand-predict-inline",
+        self.iam.put_role_policy(RoleName=self.role, PolicyName=f"bike-demand-predict-{self.region}",
                                  PolicyDocument=json.dumps(self.role_policy()))
         return "created" if created else "exists"
 
@@ -163,7 +191,7 @@ class Cloud:
             self.logs.create_log_group(logGroupName=self.log_group, tags=self.tags)
             created = True
         except self.logs.exceptions.ResourceAlreadyExistsException:
-            pass
+            self.require_ours(f"로그 그룹 {self.log_group}", self.log_group_tags())
         self.logs.put_retention_policy(logGroupName=self.log_group, retentionInDays=retention_days)
         return "created" if created else "exists"
 
@@ -173,29 +201,36 @@ class Cloud:
         try:
             return self.s3.head_object(Bucket=self.bucket, Key=key)
         except ClientError as e:
-            if _code(e) in NOT_FOUND or _code(e) == "NoSuchKey":
+            if _code(e) in NOT_FOUND:
                 return None
             raise
 
-    def upload(self, local, key: str, sha256: str, metadata: dict | None = None) -> dict:
+    def upload(self, local, key: str, sha256: str, metadata: dict | None = None,
+               need_version: bool = False) -> dict:
         from botocore.exceptions import ClientError
 
         meta = {"sha256": sha256, **(metadata or {})}
+        uri = f"s3://{self.bucket}/{key}"
         head = self.current_object(key)
-        if head and head.get("Metadata", {}).get("sha256") == sha256 and head.get("VersionId") not in (None, "null"):
-            return {"uri": f"s3://{self.bucket}/{key}", "version_id": head["VersionId"], "uploaded": False}
-        for attempt in range(UPLOAD_RETRIES):
+        if head and head.get("Metadata", {}).get("sha256") == sha256:
+            version = head.get("VersionId")
+            if not need_version or version not in (None, "null"):
+                return {"uri": uri, "version_id": version, "uploaded": False}
+        attempts = UPLOAD_RETRIES if need_version else 1
+        for attempt in range(attempts):
             with open(local, "rb") as f:
                 r = self.s3.put_object(Bucket=self.bucket, Key=key, Body=f, Metadata=meta)
             version = r.get("VersionId")
+            if not need_version:
+                return {"uri": uri, "version_id": version, "uploaded": True}
             if version and version != "null":
                 try:
                     self.s3.head_object(Bucket=self.bucket, Key=key, VersionId=version)
-                    return {"uri": f"s3://{self.bucket}/{key}", "version_id": version, "uploaded": True}
+                    return {"uri": uri, "version_id": version, "uploaded": True}
                 except ClientError as e:
                     if _code(e) not in NOT_FOUND and _code(e) != "NoSuchVersion":
                         raise
-            print(f"  버킷 버전 관리가 반영되기를 기다리는 중... ({attempt + 1}/{UPLOAD_RETRIES})")
+            print(f"  버킷 버전 관리가 반영되기를 기다리는 중... ({attempt + 1}/{attempts})")
             time.sleep(UPLOAD_WAIT_S)
         raise RuntimeError("버킷 버전 관리가 켜지지 않아 객체 버전을 받지 못했습니다")
 
@@ -206,11 +241,11 @@ class Cloud:
         except self.lam.exceptions.ResourceNotFoundException:
             return False
 
-    def deploy_function(self, lcfg: dict, code_key: str, env: dict, description: str) -> dict:
+    def deploy_function(self, lcfg: dict, code_key: str, env: dict, version_description: str) -> dict:
         conf = dict(Role=self.role_arn(), Handler=lcfg["handler"], Runtime=lcfg["runtime"],
                     MemorySize=lcfg["memory_mb"], Timeout=lcfg["timeout_s"],
                     EphemeralStorage={"Size": lcfg["ephemeral_storage_mb"]},
-                    Environment={"Variables": env}, Description=description[:256])
+                    Environment={"Variables": env}, Description=FUNCTION_DESCRIPTION)
         if not self.function_exists():
             for attempt in range(10):
                 try:
@@ -226,18 +261,20 @@ class Cloud:
             self.lam.get_waiter("function_active_v2").wait(FunctionName=self.fn)
             action = "created"
         else:
+            self.require_ours(f"Lambda 함수 {self.fn}", self.function_tags())
             self.lam.update_function_code(FunctionName=self.fn, S3Bucket=self.bucket, S3Key=code_key,
                                           Architectures=[lcfg["architecture"]])
             self.lam.get_waiter("function_updated_v2").wait(FunctionName=self.fn)
             self.lam.update_function_configuration(FunctionName=self.fn, **conf)
             self.lam.get_waiter("function_updated_v2").wait(FunctionName=self.fn)
             action = "updated"
-        ver = self.lam.publish_version(FunctionName=self.fn, Description=description[:256])
+        ver = self.lam.publish_version(FunctionName=self.fn, Description=version_description[:256])
         self.lam.get_waiter("function_active_v2").wait(FunctionName=self.fn, Qualifier=ver["Version"])
         concurrency = self.set_concurrency(lcfg.get("reserved_concurrency"))
         return {"action": action, "version": ver["Version"], "code_sha256": ver["CodeSha256"],
                 "last_modified": ver["LastModified"], "memory_mb": ver["MemorySize"],
-                "timeout_s": ver["Timeout"], "runtime": ver["Runtime"], "reserved_concurrency": concurrency}
+                "timeout_s": ver["Timeout"], "runtime": ver["Runtime"],
+                "version_description": ver.get("Description"), "reserved_concurrency": concurrency}
 
     def set_concurrency(self, n) -> dict:
         from botocore.exceptions import ClientError
@@ -282,8 +319,8 @@ class Cloud:
 
     def invoke(self, payload: dict, qualifier: str):
         t0 = time.perf_counter()
-        r = self.lam.invoke(FunctionName=self.fn, Qualifier=qualifier, Payload=json.dumps(payload).encode(),
-                            LogType="Tail")
+        r = self.lam.invoke(FunctionName=self.fn, Qualifier=qualifier,
+                            Payload=json.dumps(payload, allow_nan=False).encode(), LogType="Tail")
         ms = round((time.perf_counter() - t0) * 1000, 1)
         raw = r["Payload"].read().decode()
         tail = base64.b64decode(r.get("LogResult", "")).decode(errors="replace")
@@ -321,9 +358,9 @@ class Cloud:
             for v in page.get("Versions", []):
                 n += 1
                 size += v["Size"]
-        return {"exists": True, "object_versions": n, "total_mb": round(size / 1e6, 2)}
+        return {"exists": True, "name": self.bucket, "object_versions": n, "total_mb": round(size / 1e6, 2)}
 
-    def status(self) -> dict:
+    def regional_status(self) -> dict:
         out = {}
         try:
             f = self.lam.get_function(FunctionName=self.fn)
@@ -340,12 +377,6 @@ class Cloud:
                 "env_MODEL_URI": conf.get("Environment", {}).get("Variables", {}).get("MODEL_URI")}
         except self.lam.exceptions.ResourceNotFoundException:
             out["lambda_function"] = {"exists": False}
-        try:
-            self.iam.get_role(RoleName=self.role)
-            pols = self.iam.list_role_policies(RoleName=self.role)["PolicyNames"]
-            out["iam_role"] = {"exists": True, "inline_policies": pols}
-        except self.iam.exceptions.NoSuchEntityException:
-            out["iam_role"] = {"exists": False}
         out["s3_bucket"] = self.bucket_status()
         groups = self.logs.describe_log_groups(logGroupNamePrefix=self.log_group)["logGroups"]
         g = next((x for x in groups if x["logGroupName"] == self.log_group), None)
@@ -353,33 +384,43 @@ class Cloud:
                              "stored_bytes": g.get("storedBytes")} if g else {"exists": False})
         return out
 
-    def cleanup(self) -> list[dict]:
+    def role_status(self) -> dict:
+        try:
+            self.iam.get_role(RoleName=self.role)
+            pols = self.iam.list_role_policies(RoleName=self.role)["PolicyNames"]
+            return {"exists": True, "inline_policies": pols}
+        except self.iam.exceptions.NoSuchEntityException:
+            return {"exists": False}
+
+    def _delete(self, name: str, fn, done: list) -> None:
+        from botocore.exceptions import ClientError
+
+        try:
+            fn()
+            done.append({"resource": name, "result": "deleted"})
+        except NotOurs as e:
+            done.append({"resource": name, "result": f"skipped: {e}"})
+        except ClientError as e:
+            done.append({"resource": name, "result": "not_found" if _code(e) in NOT_FOUND else f"error: {_code(e)}"})
+
+    def cleanup_regional(self) -> list[dict]:
         from botocore.exceptions import ClientError
 
         done = []
 
-        def step(name, fn):
-            try:
-                fn()
-                done.append({"resource": name, "result": "deleted"})
-            except ClientError as e:
-                done.append({"resource": name, "result": "not_found" if _code(e) in NOT_FOUND else f"error: {_code(e)}"})
+        def del_function():
+            self.require_ours(f"Lambda 함수 {self.fn}", self.function_tags())
+            self.lam.delete_function(FunctionName=self.fn)
 
-        step(f"lambda:{self.fn}", lambda: self.lam.delete_function(FunctionName=self.fn))
-        step(f"logs:{self.log_group}", lambda: self.logs.delete_log_group(logGroupName=self.log_group))
-
-        def del_role():
-            for p in self.iam.list_role_policies(RoleName=self.role)["PolicyNames"]:
-                self.iam.delete_role_policy(RoleName=self.role, PolicyName=p)
-            self.iam.delete_role(RoleName=self.role)
-        step(f"iam:{self.role}", del_role)
+        def del_log_group():
+            self.require_ours(f"로그 그룹 {self.log_group}", self.log_group_tags())
+            self.logs.delete_log_group(logGroupName=self.log_group)
 
         def del_bucket():
             if not self.bucket:
                 raise ClientError({"Error": {"Code": "NoSuchBucket", "Message": "버킷 없음"}}, "HeadBucket")
             self.s3.head_bucket(Bucket=self.bucket)
-            if not self.bucket_is_ours():
-                raise ClientError({"Error": {"Code": "NotOurBucket", "Message": "과제 태그 없음"}}, "GetBucketTagging")
+            self.require_ours(f"버킷 {self.bucket}", self.bucket_tags())
             for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=self.bucket):
                 objs = [{"Key": v["Key"], "VersionId": v["VersionId"]}
                         for v in page.get("Versions", []) + page.get("DeleteMarkers", [])]
@@ -390,7 +431,22 @@ class Cloud:
                         raise ClientError({"Error": {"Code": err.get("Code", "DeleteObjectsError"),
                                                      "Message": err.get("Message", "")}}, "DeleteObjects")
             self.s3.delete_bucket(Bucket=self.bucket)
-        step(f"s3:{self.bucket}", del_bucket)
+
+        self._delete(f"{self.region}:lambda:{self.fn}", del_function, done)
+        self._delete(f"{self.region}:logs:{self.log_group}", del_log_group, done)
+        self._delete(f"{self.region}:s3:{self.bucket}", del_bucket, done)
+        return done
+
+    def cleanup_role(self) -> list[dict]:
+        done = []
+
+        def del_role():
+            self.require_ours(f"IAM 역할 {self.role}", self.role_tags())
+            for p in self.iam.list_role_policies(RoleName=self.role)["PolicyNames"]:
+                self.iam.delete_role_policy(RoleName=self.role, PolicyName=p)
+            self.iam.delete_role(RoleName=self.role)
+
+        self._delete(f"iam:{self.role}", del_role, done)
         return done
 
 
@@ -414,8 +470,30 @@ def parse_report(tail: str) -> dict:
     return out
 
 
-def all_gone(status: dict) -> bool:
-    return all(v.get("exists") is False for v in status.values())
+def all_gone(resources: dict) -> bool:
+    regional = [v for r in resources["regions"].values() for v in r.values()]
+    return resources["iam_role"].get("exists") is False and all(v.get("exists") is False for v in regional)
+
+
+def remembered_regions() -> list[str]:
+    return load_json(REGIONS_STATE) if REGIONS_STATE.exists() else []
+
+
+def remember_region(region: str) -> None:
+    regions = remembered_regions()
+    if region not in regions:
+        write_json(REGIONS_STATE, regions + [region])
+
+
+def known_regions(cfg: dict, args) -> list[str]:
+    regions = {resolve_region(cfg, getattr(args, "region", None)), *remembered_regions()}
+    for name in ("deploy.json", "deploy_override.json"):
+        path = ROOT / "results" / "cloud" / name
+        if path.exists():
+            region = load_json(path).get("cloud", {}).get("region")
+            if region:
+                regions.add(region)
+    return sorted(regions)
 
 
 def _lambda_cfg(ctx) -> dict:
@@ -428,12 +506,17 @@ def _load_or_empty(path) -> dict:
     return load_json(path) if path.exists() else {}
 
 
-def preflight_problems(model_sha: str, model_file_sha: str, evaluation: dict, service_check: dict,
+def preflight_problems(model_meta: dict, model_file_sha: str, evaluation: dict, service_check: dict,
                        package_info: dict, zip_sha: str | None, app_files: dict, requirements_sha: str,
-                       criteria: dict, test_sha: str) -> list[str]:
+                       criteria: dict, test_sha: str, train_sha: str, model_cfg: dict,
+                       lambda_cfg: dict) -> list[str]:
+    model_sha = model_meta.get("model_sha256")
     problems = []
     if model_file_sha != model_sha:
         problems.append("모델 파일이 metadata.json 의 sha256 과 다름")
+    if (model_meta.get("train_data") or {}).get("sha256") != train_sha \
+            or model_meta.get("params") != model_cfg.get("params") or model_meta.get("version") != model_cfg.get("version"):
+        problems.append("모델이 지금 학습 자료와 설정으로 학습되지 않음")
     if not evaluation.get("passed") or (evaluation.get("model") or {}).get("sha256") != model_sha:
         problems.append("이 모델로 evaluate 를 통과한 기록이 없음")
     elif evaluation.get("criteria") != criteria or (evaluation.get("eval_data") or {}).get("sha256") != test_sha:
@@ -446,17 +529,20 @@ def preflight_problems(model_sha: str, model_file_sha: str, evaluation: dict, se
         problems.append("build/lambda_package.zip 이 없거나 package.json 과 다름")
     if package_info.get("app_files") != app_files or package_info.get("requirements_sha256") != requirements_sha:
         problems.append("패키지를 만든 뒤 Lambda 코드나 requirements-lambda.txt 가 바뀜")
+    if package_info.get("runtime") != lambda_cfg.get("runtime") \
+            or package_info.get("architecture") != lambda_cfg.get("architecture"):
+        problems.append("패키지의 런타임이나 아키텍처가 Lambda 설정과 다름")
     return problems
 
 
-def deploy_preflight(cfg: dict) -> dict:
+def deploy_preflight(cfg: dict, lambda_cfg: dict) -> dict:
     from . import package
 
     meta = load_json(model_dir(cfg) / "metadata.json")
     pkg = _load_or_empty(ROOT / "results" / "cloud" / "package.json")
     zip_path = package.ZIP_PATH
     problems = preflight_problems(
-        model_sha=meta["model_sha256"],
+        model_meta=meta,
         model_file_sha=sha256_file(model_dir(cfg) / "model.joblib"),
         evaluation=_load_or_empty(ROOT / "results" / "evaluation" / "metrics.json"),
         service_check=_load_or_empty(ROOT / "results" / "service_check" / "local.json"),
@@ -466,6 +552,9 @@ def deploy_preflight(cfg: dict) -> dict:
         requirements_sha=sha256_file(package.REQUIREMENTS),
         criteria=cfg["evaluation"]["criteria"],
         test_sha=sha256_file(ROOT / cfg["data"]["processed_dir"] / "test.csv"),
+        train_sha=sha256_file(ROOT / cfg["data"]["processed_dir"] / "train.csv"),
+        model_cfg=cfg["model"],
+        lambda_cfg=lambda_cfg,
     )
     if problems:
         raise RuntimeError("배포 전 확인 실패: " + "; ".join(problems)
@@ -475,14 +564,15 @@ def deploy_preflight(cfg: dict) -> dict:
 
 def step_deploy(ctx) -> None:
     cfg = ctx.cfg
-    pre = deploy_preflight(cfg)
+    lcfg = _lambda_cfg(ctx)
+    pre = deploy_preflight(cfg, lcfg)
     meta, pkg_sha, zip_path = pre["meta"], pre["zip_sha256"], pre["zip_path"]
     mpath = model_dir(cfg) / "model.joblib"
     ctx.add_input(mpath)
     ctx.add_input(zip_path)
     ctx.model = {"name": meta["name"], "version": meta["version"], "sha256": meta["model_sha256"]}
-    lcfg = _lambda_cfg(ctx)
     cloud = Cloud(cfg, ctx.args, ctx)
+    remember_region(cloud.region)
 
     res = {"cloud": cloud.info()}
     res["bucket"] = cloud.ensure_bucket()
@@ -490,7 +580,8 @@ def step_deploy(ctx) -> None:
     res["log_group"] = cloud.ensure_log_group(lcfg["log_retention_days"])
 
     model_key = cloud.model_key()
-    res["model_upload"] = cloud.upload(mpath, model_key, meta["model_sha256"], {"version": meta["version"]})
+    res["model_upload"] = cloud.upload(mpath, model_key, meta["model_sha256"], {"version": meta["version"]},
+                                       need_version=True)
     meta_path = model_dir(cfg) / "metadata.json"
     res["metadata_upload"] = cloud.upload(meta_path, f"models/{meta['version']}/metadata.json", sha256_file(meta_path))
     code_key = f"packages/lambda-{pkg_sha[:12]}.zip"
@@ -508,6 +599,7 @@ def step_deploy(ctx) -> None:
     res["cloud"] = cloud.info()
     res["model_uri_override"] = bool(override)
     write_json(ctx.out("results/cloud/deploy_override.json" if override else "results/cloud/deploy.json"), res)
+    ctx.state["deployed_version"] = res["function"]["version"]
     ctx.cloud = {**cloud.info(), "function_version": res["function"]["version"],
                  "code_sha256": res["function"]["code_sha256"], "model_uri": model_uri,
                  "package_uri": res["package_upload"]["uri"]}
@@ -518,7 +610,7 @@ def step_deploy(ctx) -> None:
 
 def _cloud_invoker(ctx):
     cloud = Cloud(ctx.cfg, ctx.args, ctx)
-    version = cloud.latest_version()
+    version = ctx.state.get("deployed_version") or cloud.latest_version()
     meta, expected = expected_model(ctx.cfg)
     ctx.model = {"name": meta["name"], "version": meta["version"], "sha256": meta["model_sha256"]}
     ctx.cloud = {**cloud.info(), "function_version": version}
@@ -602,41 +694,44 @@ def step_cloud_eval(ctx) -> None:
         raise RuntimeError(f"클라우드 예측이 로컬과 다릅니다 (최대 차이 {report['max_abs_diff_vs_local']})")
 
 
-def check_region(cloud) -> None:
-    last = ROOT / "results" / "cloud" / "deploy.json"
-    if last.exists():
-        deployed = load_json(last).get("cloud", {}).get("region")
-        if deployed and deployed != cloud.region:
-            raise RuntimeError(f"마지막 배포 리전은 {deployed} 입니다. --region {deployed} 로 실행하세요 "
-                               f"(지금 리전 {cloud.region})")
+def _clouds(ctx) -> list[Cloud]:
+    return [Cloud(ctx.cfg, ctx.args, ctx, region=r) for r in known_regions(ctx.cfg, ctx.args)]
+
+
+def _status_all(clouds: list[Cloud]) -> dict:
+    return {"iam_role": clouds[0].role_status(),
+            "regions": {c.region: c.regional_status() for c in clouds}}
 
 
 def step_status(ctx) -> None:
-    cloud = Cloud(ctx.cfg, ctx.args, ctx)
-    check_region(cloud)
-    st = {"checked_at": now_iso(), **cloud.info(), "resources": cloud.status()}
+    clouds = _clouds(ctx)
+    resources = _status_all(clouds)
+    st = {"checked_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
+          "resources": resources}
     name = getattr(ctx.args, "status_name", None) or "status"
     write_json(ctx.out(f"results/cloud/{name}.json"), st)
-    ctx.cloud = cloud.info()
-    ctx.summary = {k: v.get("exists") for k, v in st["resources"].items()}
+    ctx.cloud = {**clouds[0].info(), "regions_checked": st["regions_checked"]}
+    ctx.summary = {"iam_role": resources["iam_role"].get("exists"),
+                   **{f"{r}:{k}": v.get("exists") for r, res in resources["regions"].items() for k, v in res.items()}}
     print(json.dumps(ctx.summary, ensure_ascii=False))
 
 
 def step_cleanup(ctx) -> None:
-    cloud = Cloud(ctx.cfg, ctx.args, ctx)
-    check_region(cloud)
-    before = cloud.status()
-    deleted = cloud.cleanup()
-    after = cloud.status()
+    clouds = _clouds(ctx)
+    before = _status_all(clouds)
+    deleted = [d for c in clouds for d in c.cleanup_regional()] + clouds[0].cleanup_role()
+    after = _status_all(clouds)
     for _ in range(STATUS_RETRIES):
         if all_gone(after):
             break
         time.sleep(STATUS_WAIT_S)
-        after = cloud.status()
-    report = {"cleaned_at": now_iso(), **cloud.info(), "before": before, "actions": deleted, "after": after,
-              "all_gone": all_gone(after)}
+        after = _status_all(clouds)
+    report = {"cleaned_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
+              "before": before, "actions": deleted, "after": after, "all_gone": all_gone(after)}
     write_json(ctx.out("results/cloud/cleanup.json"), report)
-    ctx.cloud = cloud.info()
+    ctx.cloud = {**clouds[0].info(), "regions_checked": report["regions_checked"]}
     ctx.summary = {"all_gone": report["all_gone"], "actions": {d["resource"]: d["result"] for d in deleted}}
     if not report["all_gone"]:
         raise RuntimeError(f"남은 자원이 있거나 확인하지 못했습니다: {after}")
+    if REGIONS_STATE.exists():
+        write_json(REGIONS_STATE, [])
