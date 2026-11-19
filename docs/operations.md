@@ -16,7 +16,7 @@
 
 | 주체 | 대상 | 권한 |
 |---|---|---|
-| 운영자 (배포와 정리를 실행하는 사람) | 이 과제의 버킷, 역할, 함수, 로그 그룹 | [docs/iam/operator-policy.json](iam/operator-policy.json). 자원 이름을 `bike-demand-*`로 좁혔다. 버킷 목록 조회(`s3:ListAllMyBuckets`)와 로그 그룹 목록 조회만 계정 전체가 대상이다 |
+| 운영자 (배포와 정리를 실행하는 사람) | 이 과제의 버킷, 역할, 함수, 로그 그룹 | [docs/iam/operator-policy.json](iam/operator-policy.json). 자원 이름을 `bike-demand-*`로 좁혔다. 버킷 목록 조회(`s3:ListAllMyBuckets`)와 로그 그룹 목록 조회만 계정 전체가 대상이다. 역할을 만들거나 역할 정책을 바꾸는 권한은 권한 경계 `bike-demand-predict-boundary`가 붙은 역할에만 쓸 수 있다 |
 | Lambda 실행 역할 `bike-demand-predict-role` | 자기 로그 그룹, 이 과제 버킷(`bike-demand-mlops-*`)의 `models/*` | 로그 쓰기, `s3:GetObject`, `s3:GetObjectVersion`만. 권한 경계 `bike-demand-predict-boundary`가 같은 범위로 상한을 건다 |
 | 호출하는 사람 | 함수 `bike-demand-predict`의 `live` 별칭 | `lambda:InvokeFunction`. 공개 주소는 만들지 않는다 |
 
