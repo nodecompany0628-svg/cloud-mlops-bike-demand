@@ -1,0 +1,68 @@
+"""모델 학습: HistGradientBoostingRegressor(포아송 손실).
+
+대여 건수는 0 이상의 셈 값이라 포아송 손실을 쓴다(예측도 항상 0 이상).
+하이퍼파라미터는 config/pipeline.json 에 고정해 두고, 평가 자료로 고르지 않았다.
+"""
+
+from __future__ import annotations
+
+import time
+
+import joblib
+import numpy as np
+import pandas as pd
+import sklearn
+from sklearn.ensemble import HistGradientBoostingRegressor
+
+from .common import ROOT, model_dir, rel, sha256_file, write_json
+from .data import TARGET, feature_matrix
+from .features import FEATURES
+from .runlog import now_iso
+
+
+def build_model(params: dict) -> HistGradientBoostingRegressor:
+    return HistGradientBoostingRegressor(**params)
+
+
+def step_train(ctx) -> None:
+    cfg = ctx.cfg
+    mcfg = cfg["model"]
+    train_path = ROOT / cfg["data"]["processed_dir"] / "train.csv"
+    ctx.add_input(train_path)
+    train = pd.read_csv(train_path)
+
+    X = np.asarray(feature_matrix(train), dtype=float)
+    y = train[TARGET].to_numpy(dtype=float)
+
+    model = build_model(mcfg["params"])
+    t0 = time.perf_counter()
+    model.fit(X, y)
+    fit_s = time.perf_counter() - t0
+    train_mae = float(np.mean(np.abs(model.predict(X) - y)))
+
+    mdir = rel(model_dir(cfg))
+    model_path = ctx.out(f"{mdir}/model.joblib")
+    joblib.dump(model, model_path, compress=3)
+    sha = sha256_file(model_path)
+
+    meta = {
+        "name": mcfg["name"],
+        "version": mcfg["version"],
+        "created_at": now_iso(),
+        "algorithm": "sklearn.ensemble.HistGradientBoostingRegressor",
+        "params": mcfg["params"],
+        "features": FEATURES,
+        "target": "cnt (시간당 전체 대여 건수, 대/시간)",
+        "train_data": {"path": rel(train_path), "sha256": sha256_file(train_path),
+                       "rows": int(len(train)), "first": train.datetime.min(), "last": train.datetime.max()},
+        "library_versions": {"scikit-learn": sklearn.__version__, "numpy": np.__version__,
+                             "joblib": joblib.__version__},
+        "n_iter": int(model.n_iter_),
+        "fit_seconds": round(fit_s, 2),
+        "train_mae": round(train_mae, 2),
+        "model_file": "model.joblib",
+        "model_sha256": sha,
+    }
+    write_json(ctx.out(f"{mdir}/metadata.json"), meta)
+    ctx.model = {"name": mcfg["name"], "version": mcfg["version"], "sha256": sha}
+    ctx.summary = {"train_rows": int(len(train)), "train_mae": meta["train_mae"], "fit_seconds": meta["fit_seconds"]}
