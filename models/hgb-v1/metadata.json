@@ -1,7 +1,7 @@
 {
   "name": "bike-hgb",
   "version": "hgb-v1",
-  "created_at": "2026-11-20T07:16:19+09:00",
+  "created_at": "2026-11-20T07:50:20+09:00",
   "algorithm": "sklearn.ensemble.HistGradientBoostingRegressor",
   "params": {
     "loss": "poisson",
@@ -41,7 +41,7 @@
   },
   "n_iter": 500,
   "train_threads": 1,
-  "fit_seconds": 1.07,
+  "fit_seconds": 1.15,
   "train_mae": 17.66,
   "model_file": "model.joblib",
   "model_sha256": "f6186c0a881176ccb676683346571a8fa1c5fc52aa0a4cfd0c6768d241bfded0"
