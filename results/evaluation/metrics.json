@@ -5,6 +5,7 @@
     "sha256": "f6186c0a881176ccb676683346571a8fa1c5fc52aa0a4cfd0c6768d241bfded0"
   },
   "model_source": "candidate",
+  "models_not_used": [],
   "eval_data": {
     "path": "data/processed/test.csv",
     "sha256": "e634352180e336bcd3fbd1d819e624dd8e9ff5b2598681a594d21fa4b69691ba",
