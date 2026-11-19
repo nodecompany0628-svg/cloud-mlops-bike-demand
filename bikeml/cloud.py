@@ -93,7 +93,8 @@ class Cloud:
         self.bucket = self.buckets[0] if len(self.buckets) == 1 else None
 
     def info(self) -> dict:
-        return {"region": self.region, "profile": self.profile, "caller_type": self.caller_type,
+        return {"region": self.region, "credentials": "profile" if self.profile else "environment",
+                "caller_type": self.caller_type,
                 "function": self.fn, "role": self.role, "bucket": self.bucket, "log_group": self.log_group}
 
     def role_arn(self) -> str:
@@ -704,17 +705,21 @@ def step_smoke(ctx) -> None:
     cloud, version, expected, invoke = _cloud_invoker(ctx)
     ctx.add_input(ROOT / "samples" / "service_cases.json")
     identity = cloud.version_identity(version)
+    ctx.cloud = {**ctx.cloud, "identity": identity}
     report = run_cases(invoke, expected, f"lambda:{cloud.fn}:{version}", ctx.cfg, ctx.secrets)
     day = sample_day_comparison(report.pop("responses"), ctx.cfg)
     report["sample_day"] = day
     report["function_version"] = version
     report["identity"] = identity
+    if day is None:
+        report["all_passed"] = False
+        report.setdefault("problems", []).append("예시 날짜 비교를 만들지 못함 (prepare 결과 확인)")
     write_json(ctx.out("results/service_check/cloud.json"), report)
     ctx.summary = {"passed": report["passed"], "total": report["total"], "function_version": version}
     if not report["all_passed"]:
         bad = [f"{c['name']}: {c['problems'][:1]}" for c in report["cases"] if not c["passed"]]
+        bad += report.get("problems", [])
         raise RuntimeError(f"클라우드 서비스 검사 실패 {len(bad)}건: {bad[:3]}")
-    ctx.state["smoke_identity"] = identity
 
 
 def step_cloud_eval(ctx) -> None:
@@ -723,6 +728,7 @@ def step_cloud_eval(ctx) -> None:
     cfg = ctx.cfg
     cloud, version, expected, invoke = _cloud_invoker(ctx)
     identity = cloud.version_identity(version)
+    ctx.cloud = {**ctx.cloud, "identity": identity}
     test_path = ROOT / cfg["data"]["processed_dir"] / "test.csv"
     local_path = RESULTS / "evaluation" / "predictions_test.csv"
     ctx.add_input(test_path)
@@ -774,16 +780,19 @@ def step_cloud_eval(ctx) -> None:
                    "max_abs_diff_vs_local": report["max_abs_diff_vs_local"], "function_version": version}
     if not report["identical_to_local"]:
         raise RuntimeError(f"클라우드 예측이 로컬과 다릅니다 (최대 차이 {report['max_abs_diff_vs_local']})")
-    ctx.state["cloud_eval_identity"] = identity
 
 
-def passed_identity(ctx, key: str, path, ok) -> dict | None:
-    if key in ctx.state:
-        return ctx.state[key]
-    if not path.exists():
+def last_status(step: str, identity: dict) -> str | None:
+    from . import runlog
+
+    if not runlog.RUN_LOG.exists():
         return None
-    report = load_json(path)
-    return report.get("identity") if ok(report) else None
+    status = None
+    for line in runlog.RUN_LOG.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(line)
+        if rec.get("step") == step and (rec.get("cloud") or {}).get("identity") == identity:
+            status = rec.get("status")
+    return status
 
 
 def step_release(ctx) -> None:
@@ -791,14 +800,11 @@ def step_release(ctx) -> None:
     cloud.require_ours(f"Lambda 함수 {cloud.fn}", cloud.function_tags())
     version = ctx.state.get("deployed_version") or cloud.latest_version()
     current = cloud.version_identity(version)
-    smoke = passed_identity(ctx, "smoke_identity", RESULTS / "service_check" / "cloud.json",
-                            lambda r: r.get("all_passed"))
-    evaluated = passed_identity(ctx, "cloud_eval_identity", RESULTS / "cloud" / "cloud_eval.json",
-                                lambda r: r.get("identical_to_local"))
-    missing = [name for name, seen in (("smoke", smoke), ("cloud-eval", evaluated)) if seen != current]
+    recorded = sanitize(current, ctx.secrets)
+    missing = [step for step in ("smoke", "cloud-eval") if last_status(step, recorded) != "success"]
     if missing:
-        raise RuntimeError(f"{cloud.region} 의 버전 {version} 은 {', '.join(missing)} 를 통과한 기록이 없습니다 "
-                           "(리전, 리비전, 코드, 모델 경로가 모두 같아야 합니다)")
+        raise RuntimeError(f"{cloud.region} 의 버전 {version} 은 {', '.join(missing)} 의 마지막 실행이 통과가 아닙니다 "
+                           "(같은 리전, 리비전, 코드, 모델 경로로 실행한 가장 최근 기록이 성공이어야 합니다)")
     previous = cloud.alias_version()
     alias = cloud.point_alias(version)
     report = {"released_at": now_iso(), **cloud.info(), "function_version": version, "identity": current,

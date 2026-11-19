@@ -351,3 +351,24 @@ def test_two_buckets_block_deploy_but_cleanup_removes_both(sandbox):
     recs = records(sandbox)
     assert rc_deploy == 1 and "버킷이 여러 개" in recs[0]["error"]
     assert rc_clean == 0 and left == []
+
+
+def test_release_refuses_when_latest_smoke_failed(sandbox, monkeypatch):
+    with mock_aws():
+        assert run(["deploy", "smoke", "cloud-eval"]) == 0
+
+        def broken(self, payload, qualifier):
+            return {"statusCode": 500, "body": {"ok": False, "error": {"code": "MODEL_LOAD_FAILED"}}}, {}
+        monkeypatch.setattr(cloud.Cloud, "invoke", broken)
+        assert run(["smoke"]) == 1
+        rc = run(["release"])
+    recs = records(sandbox)
+    assert rc == 1 and "smoke" in recs[-1]["error"]
+
+
+def test_profile_name_is_not_recorded(sandbox):
+    args = make_args(steps=["status"], profile="kim-personal")
+    with mock_aws():
+        runlog.run_steps(["status"], STEPS, load_config(), args, DEFAULT_CONFIG)
+    text = (sandbox / "runs" / "run_log.jsonl").read_text(encoding="utf-8")
+    assert "kim-personal" not in text and "<PROFILE>" in text

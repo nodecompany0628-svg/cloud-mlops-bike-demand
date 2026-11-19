@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import sklearn
 from sklearn.ensemble import HistGradientBoostingRegressor
+from threadpoolctl import threadpool_limits
 
 from .common import ROOT, rel, sha256_file, write_json
 from .data import FEATURE_CODE, TARGET, feature_matrix, split_problems
@@ -24,7 +25,9 @@ def step_train(ctx) -> None:
     train_path = ROOT / cfg["data"]["processed_dir"] / "train.csv"
     ctx.add_input(train_path)
     train = pd.read_csv(train_path)
-    test = pd.read_csv(ROOT / cfg["data"]["processed_dir"] / "test.csv")
+    test_path = ROOT / cfg["data"]["processed_dir"] / "test.csv"
+    ctx.add_input(test_path)
+    test = pd.read_csv(test_path)
     bad = split_problems(cfg, train, test)
     if bad:
         raise RuntimeError(f"{', '.join(bad)}이 config 의 split 과 다릅니다. prepare 를 먼저 실행하세요")
@@ -32,9 +35,11 @@ def step_train(ctx) -> None:
     X = np.asarray(feature_matrix(train), dtype=float)
     y = train[TARGET].to_numpy(dtype=float)
 
+    threads = int(mcfg.get("train_threads", 1))
     model = build_model(mcfg["params"])
     t0 = time.perf_counter()
-    model.fit(X, y)
+    with threadpool_limits(limits=threads):
+        model.fit(X, y)
     fit_s = time.perf_counter() - t0
     train_mae = float(np.mean(np.abs(model.predict(X) - y)))
 
@@ -57,6 +62,7 @@ def step_train(ctx) -> None:
         "library_versions": {"scikit-learn": sklearn.__version__, "numpy": np.__version__,
                              "joblib": joblib.__version__},
         "n_iter": int(model.n_iter_),
+        "train_threads": threads,
         "fit_seconds": round(fit_s, 2),
         "train_mae": round(train_mae, 2),
         "model_file": "model.joblib",

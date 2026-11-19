@@ -19,6 +19,7 @@
   "model": {
     "name": "bike-hgb",
     "version": "hgb-v1",
+    "train_threads": 1,
     "params": {
       "loss": "poisson",
       "learning_rate": 0.05,
@@ -32,7 +33,7 @@
   "evaluation": {
     "criteria": {
       "must_beat_all_baselines": true,
-      "min_mae_reduction_vs_hour_baseline": 0.30
+      "min_mae_reduction_vs_hour_baseline": 0.3
     },
     "sample_day": "2012-12-03",
     "cloud_batch_size": 500

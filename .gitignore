@@ -13,3 +13,4 @@ data/raw/*.zip
 .idea/
 models/_candidate/
 *.promote-bak
+out.json

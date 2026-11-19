@@ -162,9 +162,12 @@ def step_check_local(ctx) -> None:
     report["app_files"] = {arc: sha256_file(src) for arc, src in APP_FILES.items()}
     day = sample_day_comparison(report.pop("responses"), ctx.cfg)
     report["sample_day"] = day
+    if day is None:
+        report["all_passed"] = False
+        report["problems"] = ["예시 날짜 비교를 만들지 못함 (prepare 결과 확인)"]
     write_json(ctx.out("results/service_check/local.json"), report)
     ctx.summary = {"passed": report["passed"], "total": report["total"],
                    "sample_day_mae": day["mae"] if day else None}
     if not report["all_passed"]:
-        bad = [c["name"] for c in report["cases"] if not c["passed"]]
+        bad = [c["name"] for c in report["cases"] if not c["passed"]] + report.get("problems", [])
         raise RuntimeError(f"서비스 검사 실패: {bad}")

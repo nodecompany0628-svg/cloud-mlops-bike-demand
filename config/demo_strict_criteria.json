@@ -19,6 +19,7 @@
   "model": {
     "name": "bike-hgb",
     "version": "hgb-v1",
+    "train_threads": 1,
     "params": {
       "loss": "poisson",
       "learning_rate": 0.05,

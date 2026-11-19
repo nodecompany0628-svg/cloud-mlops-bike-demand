@@ -72,6 +72,7 @@ def _redactions(secrets: list[str]) -> list[tuple[str, str]]:
     return pairs
 
 
+PROFILE_IN_ERROR = re.compile(r"(profile \()[^)]*(\))")
 PRINCIPAL = re.compile(r"((?:user|assumed-role|federated-user)/)[^\s\\\"',;)]+")
 
 
@@ -85,6 +86,7 @@ def sanitize(obj, secrets: list[str]):
         for s, repl in _redactions(secrets):
             obj = re.sub(re.escape(s), lambda _m, r=repl: r, obj, flags=re.IGNORECASE)
         obj = PRINCIPAL.sub(r"\1<NAME>", obj)
+        obj = PROFILE_IN_ERROR.sub(r"\1<PROFILE>\2", obj)
         pat = _user_pattern()
         return pat.sub(r"\1<USER>", obj) if pat else obj
     if isinstance(obj, dict):
@@ -223,7 +225,8 @@ def run_steps(step_names: list[str], registry: dict, cfg: dict, args, config_pat
             "model": ctx.model,
             "inputs": ctx.inputs,
             "configs": ctx.configs,
-            "args": {k: v for k, v in vars(args).items() if k not in ("func",)},
+            "args": {k: ("<PROFILE>" if k == "profile" and v else v)
+                     for k, v in vars(args).items() if k not in ("func",)},
             "cloud": ctx.cloud,
             "result_location": result_location,
             "summary": ctx.summary,
