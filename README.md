@@ -81,7 +81,7 @@
 | 기준 방법 MAE | 시간대 평균 94.78, 전체 평균 170.51 대/시간. 시간대 평균보다 49.9% 낮아 합격 | 같은 파일 |
 | 서비스 검사 (로컬 핸들러) | 12/12 통과 | [results/service_check/local.json](results/service_check/local.json) |
 | 실패 처리 예시 | 합격 기준을 90%로 올린 설정에서 evaluate 실패, check-local 건너뜀, 정상 결과는 그대로 | [results/failed/](results/failed/), [runs/run_log.jsonl](runs/run_log.jsonl) |
-| 테스트 | 94개 통과 | `python -m pytest -q` |
+| 테스트 | 98개 통과 | `python -m pytest -q` |
 | Lambda 패키지 | zip 64.29MB, 압축 해제 198.94MB (한도 250MB) | [results/cloud/package.json](results/cloud/package.json) |
 | 실제 AWS 실행 | 실행 전 | [docs/cloud.md](docs/cloud.md) |
 
@@ -142,7 +142,7 @@ python -m bikeml runs
 ```
 
 - 전체 옵션 `--config`, `--profile`, `--region`, `--lambda-config`는 `run`, `status`, `cleanup`, `runs` 앞에 쓴다.
-- `status`, `cleanup`은 지금 리전, 이 PC에서 같은 계정으로 배포를 시작했던 리전(`.state/regions.json`, Git 제외), 실행 기록(`runs/run_log.jsonl`)에 남은 모든 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전, 이 계정에 있는 `bike-demand-mlops-<리전>-<8자리>` 버킷 이름에 든 리전을 모두 조회하고 정리한다. 그래서 `.state/`가 없는 새 폴더에서 실행해도 다른 리전에 남은 자원을 찾는다. 이 계정에서 쓸 수 없는 리전은 `regions_unreachable`에 남기고 건너뛰는데, 이 계정의 상태 파일이나 버킷 이름에서 찾은 리전에 접속하지 못하면 정리를 실패로 기록한다. 다른 계정으로 배포한 기록이 남아 있으면 `cleanup`은 이 계정의 자원을 지운 뒤에도 실패로 기록하고, 그 계정의 프로필로 다시 실행하라고 알린다.
+- `status`, `cleanup`은 지금 리전, 이 PC에서 같은 계정으로 배포를 시작했던 리전(`.state/regions.json`, Git 제외), 실행 기록(`runs/run_log.jsonl`)에 남은 모든 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전, 이 계정에 있는 `bike-demand-mlops-<리전>-<8자리>` 버킷 이름에 든 리전을 모두 조회하고 정리한다. 그래서 `.state/`가 없는 새 폴더에서 실행해도 다른 리전에 남은 자원을 찾는다. 켜지 않은 리전처럼 인증 오류(`InvalidClientTokenId` 등)로 접속할 수 없는 리전은 `regions_unreachable`에 남기고 건너뛴다. 그 밖의 이유(일시적인 네트워크나 권한 오류)로 접속하지 못한 리전이 있으면 정리를 실패로 기록하고 IAM 역할도 남긴다. 실행 기록과 배포 기록에 남은 버킷 이름도 조회와 정리에 넣으므로, 설정에서 `cloud.bucket`을 지운 뒤에도 그 버킷을 찾는다. 다른 계정으로 배포한 기록이 남아 있으면 `cleanup`은 이 계정의 자원을 지운 뒤에도 실패로 기록하고, 그 계정의 프로필로 다시 실행하라고 알린다.
 - 단계 하나씩도 실행할 수 있다: `python -m bikeml run evaluate`, `python -m bikeml --profile mlops run deploy smoke`
 - 한 단계가 실패하면 뒤 단계는 실행하지 않고, 실패한 결과는 `results/failed/<run_id>_<단계>/`에 따로 남는다. 실행 중 Ctrl+C로 멈춰도 그 단계는 실패로 기록된다.
 - 실패 처리 예시 재현: `python -m bikeml --config config/demo_strict_criteria.json run evaluate check-local`
@@ -167,7 +167,7 @@ aws lambda invoke --function-name bike-demand-predict --qualifier live --region 
 | `results/service_check/local.json`, `cloud.json` | 서비스 검사 결과 (로컬, Lambda), 실행 환경 버전 |
 | `results/cloud/package.json` | 패키지 해시, 크기, 들어간 라이브러리와 코드 해시 |
 | `results/cloud/deploy.json`, `deploy_override.json` | 정상 배포 기록, 오류 재현용 배포 기록 |
-| `results/cloud/cloud_eval.json`, `predictions_cloud.csv` | 클라우드 평가 |
+| `results/cloud/cloud_eval.json`, `predictions_cloud.csv` | 클라우드 평가 (호출이 실패하면 그때까지의 호출 기록 `cloud_eval_calls.json`이 실패 폴더에 남음) |
 | `results/cloud/release.json` | `live` 별칭을 옮긴 기록 (이전 버전 포함) |
 | `results/cloud/status*.json`, `cleanup.json` | 자원 상태, 정리 |
 | `results/failed/<run_id>_<단계>/` | 실패한 단계의 결과와 `error.txt` |

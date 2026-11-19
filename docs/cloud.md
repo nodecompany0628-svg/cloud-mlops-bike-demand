@@ -74,14 +74,14 @@ Lambda 실행 역할 `bike-demand-predict-role`의 권한은 두 가지뿐이다
 | 모델 | Git: `models/hgb-v1/`, 클라우드: `s3://<버킷>/models/hgb-v1/<모델 sha 12자리>/` |
 | 배포 패키지 | 로컬: `build/lambda_package.zip` (Git 제외), 클라우드: `s3://<버킷>/packages/lambda-<sha12>.zip` |
 | 요청 예시 | `samples/service_cases.json`, `samples/generated/request_2012-12-03.json` |
-| 클라우드 응답과 평가 | Git: `results/service_check/cloud.json`, `results/cloud/cloud_eval.json`, `results/cloud/predictions_cloud.csv` |
+| 클라우드 응답과 평가 | Git: `results/service_check/cloud.json`, `results/cloud/cloud_eval.json`, `results/cloud/predictions_cloud.csv`. 클라우드 평가 중 호출이 실패하면 그때까지의 호출 기록 `cloud_eval_calls.json`이 실패 폴더에 남는다 |
 | 배포 기록 | Git: `results/cloud/package.json`, `results/cloud/deploy.json`. 오류 재현용 배포는 `deploy_override.json`에 따로 남겨 정상 배포 기록을 덮지 않는다 |
 | 함수 로그 | CloudWatch Logs `/aws/lambda/bike-demand-predict` (7일). 필요한 부분은 Git 기록으로 옮긴다 |
 | 실행 기록 | Git: `runs/run_log.jsonl` |
 
 Lambda는 S3에서 받은 코드의 사본을 따로 보관한다(기본 저장 방식). 그래서 수명 주기 규칙으로 `packages/`의 zip이 지워져도 배포된 함수에는 영향이 없다.
 
-`deploy`는 자원을 만들기 전에 계정과 리전을 `.state/regions.json`(Git 제외)에 적는다. 계정 ID는 그대로 적지 않고, 이 PC에서 만든 임의 키(`.state/local_key`, Git 제외)로 HMAC-SHA256을 계산한 값만 적는다. `status`와 `cleanup`은 지금 리전, 이 PC에서 같은 계정으로 배포를 시작했던 리전(`.state/regions.json`, Git 제외), 실행 기록(`runs/run_log.jsonl`)에 남은 모든 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전, 이 계정에 있는 `bike-demand-mlops-<리전>-<8자리>` 버킷 이름에 든 리전을 모두 조회하고 정리한다. `.state/`가 없는 새 폴더에서도 버킷 이름과 실행 기록으로 다른 리전을 찾기 위해서다. 다른 계정의 배포 기록이 남아 있으면 `cleanup`은 실패로 기록하고 그 계정의 프로필로 다시 실행하라고 알린다. 이 계정에서 쓸 수 없는 리전(예: 켜지 않은 옵트인 리전)은 `regions_unreachable`에 남기고 건너뛴다. 다만 이 계정의 상태 파일이나 버킷 이름에서 찾은 리전에 접속하지 못하면 정리를 실패로 기록하고 IAM 역할도 남긴다. 실행 기록에 빈 줄은 건너뛰고, 읽을 수 없는 줄이 있으면 `release`는 검사 결과를 확인할 수 없으므로 멈춘다. IAM 역할은 리전과 상관없는 자원이라, 모든 리전의 지역 자원이 지워졌을 때만 마지막에 지우고, 역할의 인라인 정책은 리전마다 따로 둔다.
+`deploy`는 자원을 만들기 전에 계정과 리전을 `.state/regions.json`(Git 제외)에 적는다. 계정 ID는 그대로 적지 않고, 이 PC에서 만든 임의 키(`.state/local_key`, Git 제외)로 HMAC-SHA256을 계산한 값만 적는다. `status`와 `cleanup`은 지금 리전, 이 PC에서 같은 계정으로 배포를 시작했던 리전(`.state/regions.json`, Git 제외), 실행 기록(`runs/run_log.jsonl`)에 남은 모든 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전, 이 계정에 있는 `bike-demand-mlops-<리전>-<8자리>` 버킷 이름에 든 리전을 모두 조회하고 정리한다. `.state/`가 없는 새 폴더에서도 버킷 이름과 실행 기록으로 다른 리전을 찾기 위해서다. 다른 계정의 배포 기록이 남아 있으면 `cleanup`은 실패로 기록하고 그 계정의 프로필로 다시 실행하라고 알린다. 켜지 않은 리전처럼 인증 오류(`InvalidClientTokenId` 등)로 접속할 수 없는 리전은 `regions_unreachable`에 남기고 건너뛴다. 그 밖의 이유(일시적인 네트워크나 권한 오류)로 접속하지 못한 리전이 있으면 정리를 실패로 기록하고 IAM 역할도 남긴다. 실행 기록과 배포 기록에 남은 버킷 이름도 조회와 정리에 넣으므로, 설정에서 `cloud.bucket`을 지운 뒤에도 그 버킷을 찾는다. 실행 기록에 빈 줄은 건너뛰고, 읽을 수 없는 줄이 있으면 `release`는 검사 결과를 확인할 수 없으므로 멈춘다. IAM 역할은 리전과 상관없는 자원이라, 모든 리전의 지역 자원이 지워졌을 때만 마지막에 지우고, 역할의 인라인 정책은 리전마다 따로 둔다.
 
 공개 저장소에 계정 정보가 남지 않게 했다([bikeml/runlog.py](../bikeml/runlog.py)의 `sanitize`).
 - 버킷 이름에는 계정 ID 대신 임의 문자열을 넣는다. 다음 실행부터는 같은 접두어의 버킷을 목록에서 찾아 쓴다.
@@ -89,9 +89,9 @@ Lambda는 S3에서 받은 코드의 사본을 따로 보관한다(기본 저장 
 - 기록과 결과 파일을 저장할 때 다음을 바꾼다. JSON 안에서 이스케이프된 경로도 포함한다.
   - 계정 ID는 `<ACCOUNT_ID>`로 바꾼다.
   - 저장소 경로는 `<REPO>`, 홈 폴더 경로는 `~`로 바꾼다.
-  - 경로 밖에서 나온 이 PC 사용자 이름(`Users\이름` 형태)은 `<USER>`로 바꾼다.
+  - 경로 밖에서 나온 이 PC 사용자 이름(`Users\이름` 형태)은 `<USER>`로 바꾼다. 경로는 폴더 경계까지 맞을 때만 바꾸므로 이름이 비슷한 다른 폴더는 건드리지 않는다.
   - AWS 오류 메시지 속 IAM 사용자나 세션 이름(`user/이름`, `assumed-role/...`)은 `<NAME>`으로, ARN 속 12자리 계정 ID는 `<ACCOUNT_ID>`로 바꾼다. 계정 ID를 알기 전에 난 오류도 마찬가지다.
-  - 쓰고 있는 AWS 프로필 이름은 `<PROFILE>`로 바꾼다. 실행 인자의 `profile`도 이름 대신 `<PROFILE>`로 남긴다.
+  - AWS 오류 문장에서 프로필 이름이 나오는 자리(`profile (이름)`, `profile "이름"`, `profile 이름`, `profiles: [...]`)는 `<PROFILE>`로 바꾼다. 실행 인자의 `profile`도 이름 대신 `<PROFILE>`로 남긴다. 다른 문자열은 건드리지 않으므로 프로필 이름이 `model` 같은 흔한 단어여도 모델 경로 같은 값은 바뀌지 않는다.
 
 ## 3. 실제 입력에서 결과까지 (실행 결과)
 
@@ -135,7 +135,7 @@ python -m bikeml --config config/demo_strict_criteria.json run evaluate check-lo
 
 | 항목 | 결과 |
 |---|---|
-| run_id | `20261120T002028-c43962` |
+| run_id | `20261120T002028-c43962` (코드 커밋 `fb67798`에서 실행. 그 뒤 평가 코드는 바뀌지 않았다) |
 | evaluate | failed. `RuntimeError: 합격 기준 미달: {'beats_all_baselines': True, 'mae_reduction_vs_hour_baseline': 0.499, 'meets_reduction': False}` |
 | check-local | skipped (`이전 단계 실패로 실행하지 않음: evaluate`) |
 | 실패한 결과 | `results/failed/20261120T002028-c43962_evaluate/` (metrics.json의 `passed: false`, error.txt) |
