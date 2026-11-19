@@ -227,6 +227,8 @@ def test_cleanup_fails_when_bucket_state_is_unknown(sandbox, monkeypatch):
     failed = sandbox / "failed" / f"{recs[-1]['run_id']}_cleanup" / "results" / "cloud" / "cleanup.json"
     report = json.loads(failed.read_text(encoding="utf-8"))
     assert report["all_gone"] is False and regional(report["after"])["s3_bucket"]["exists"] is None
+    role_action = next(x for x in report["actions"] if x["resource"].startswith("iam:"))
+    assert role_action["result"].startswith("kept")
 
 
 def test_deploy_stops_before_aws_when_preflight_fails(sandbox, monkeypatch):
@@ -326,3 +328,26 @@ def test_release_rejects_untested_region(sandbox):
         rc = run(["release"], region="us-west-2")
     recs = records(sandbox)
     assert rc == 1 and "us-west-2" in recs[-1]["error"]
+
+
+def test_empty_tags_are_refused(sandbox, monkeypatch):
+    cfg = load_config()
+    cfg["cloud"]["tags"] = {}
+    with mock_aws():
+        rc = runlog.run_steps(["status"], STEPS, cfg, make_args(steps=["status"]), DEFAULT_CONFIG)
+    assert rc == 1 and "cloud.tags" in records(sandbox)[-1]["error"]
+
+
+def test_two_buckets_block_deploy_but_cleanup_removes_both(sandbox):
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="ap-northeast-2")
+        for name in ("bike-demand-mlops-ap-northeast-2-00000001", "bike-demand-mlops-ap-northeast-2-00000002"):
+            s3.create_bucket(Bucket=name, CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"})
+            s3.put_bucket_tagging(Bucket=name, Tagging={"TagSet": [
+                {"Key": k, "Value": v} for k, v in load_config()["cloud"]["tags"].items()]})
+        rc_deploy = run(["deploy"])
+        rc_clean = run(["cleanup"])
+        left = [b["Name"] for b in s3.list_buckets()["Buckets"]]
+    recs = records(sandbox)
+    assert rc_deploy == 1 and "버킷이 여러 개" in recs[0]["error"]
+    assert rc_clean == 0 and left == []

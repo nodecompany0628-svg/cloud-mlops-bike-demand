@@ -52,14 +52,29 @@ def run_evaluate():
 def test_failed_candidate_does_not_replace_published_model(isolated):
     root, published, candidate = isolated
     train = pd.read_csv(TRAIN)
-    weak = build_model({**CFG["model"]["params"], "max_iter": 1})
-    weak.fit(np.asarray(feature_matrix(train)), train[TARGET].to_numpy(dtype=float))
+    shuffled = np.random.default_rng(0).permutation(train[TARGET].to_numpy(dtype=float))
+    weak = build_model(CFG["model"]["params"])
+    weak.fit(np.asarray(feature_matrix(train)), shuffled)
     write_candidate(candidate, weak)
     before = sha256_file(published / "model.joblib")
 
     assert run_evaluate() == 1
+    rec = [json.loads(x) for x in (root / "runs" / "run_log.jsonl").read_text(encoding="utf-8").splitlines()][-1]
+    assert "합격 기준 미달" in rec["error"]
     assert sha256_file(published / "model.joblib") == before
     assert not (root / "results" / "evaluation" / "metrics.json").exists()
+
+
+def test_candidate_whose_file_disagrees_with_metadata_is_not_used(isolated):
+    root, published, candidate = isolated
+    train = pd.read_csv(TRAIN)
+    other = build_model({**CFG["model"]["params"], "max_iter": 1})
+    other.fit(np.asarray(feature_matrix(train)), train[TARGET].to_numpy(dtype=float))
+    write_candidate(candidate, other)
+
+    assert run_evaluate() == 0
+    metrics = json.loads((root / "results" / "evaluation" / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["model_source"] == "published"
 
 
 def test_passing_candidate_is_published(isolated):

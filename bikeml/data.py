@@ -149,6 +149,16 @@ def split_problems(cfg: dict, train: pd.DataFrame, test: pd.DataFrame) -> list[s
     return out
 
 
+def estimator_mismatch(model, cfg: dict) -> bool:
+    params = model.get_params()
+    return any(params.get(k) != v for k, v in cfg["model"]["params"].items())
+
+
+def evaluation_rows(test: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    keep = test.humidity.notna()
+    return test[keep].reset_index(drop=True), int((~keep).sum())
+
+
 def model_mismatches(meta: dict, cfg: dict) -> list[str]:
     train_path = ROOT / cfg["data"]["processed_dir"] / "train.csv"
     out = []

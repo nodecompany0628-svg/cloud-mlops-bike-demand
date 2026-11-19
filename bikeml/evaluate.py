@@ -5,7 +5,14 @@ import numpy as np
 import pandas as pd
 
 from .common import ROOT, candidate_dir, load_json, model_dir, sha256_file, write_json
-from .data import TARGET, feature_matrix, model_mismatches, split_problems
+from .data import (
+    TARGET,
+    estimator_mismatch,
+    evaluation_rows,
+    feature_matrix,
+    model_mismatches,
+    split_problems,
+)
 from .features import FEATURES
 
 SANDY_DAYS = ("2012-10-29", "2012-10-30")
@@ -42,7 +49,11 @@ def load_model(cfg):
         sha = sha256_file(path)
         if sha != meta["model_sha256"]:
             raise ValueError(f"모델 파일 sha256 이 metadata 와 다릅니다 ({sha[:12]}... != {meta['model_sha256'][:12]}...)")
-        return joblib.load(path), meta, path, source
+        model = joblib.load(path)
+        if estimator_mismatch(model, cfg):
+            tried.append(f"{source}: 모델 파일의 하이퍼파라미터")
+            continue
+        return model, meta, path, source
     raise RuntimeError(f"지금 설정과 맞는 모델이 없습니다 ({'; '.join(tried) or '모델 없음'}). train 을 먼저 실행하세요")
 
 
@@ -70,6 +81,7 @@ def step_evaluate(ctx) -> None:
     bad = split_problems(cfg, train, test)
     if bad:
         raise RuntimeError(f"{', '.join(bad)}이 config 의 split 과 다릅니다. prepare 를 먼저 실행하세요")
+    test, excluded = evaluation_rows(test)
     X_train = np.asarray(feature_matrix(train), dtype=float)
     X_test = np.asarray(feature_matrix(test, allow_missing_humidity=False), dtype=float)
     y = test[TARGET].to_numpy(dtype=float)
@@ -130,7 +142,7 @@ def step_evaluate(ctx) -> None:
         "model": ctx.model,
         "model_source": source,
         "eval_data": {"path": "data/processed/test.csv", "sha256": sha256_file(pdir / "test.csv"),
-                      "rows": int(len(test)),
+                      "rows": int(len(test)), "excluded_missing_humidity": excluded,
                       "first": test.datetime.min(), "last": test.datetime.max(),
                       "actual_mean": round(float(y.mean()), 2)},
         "unit": "대/시간 (daily_total_mae 는 대/일)",

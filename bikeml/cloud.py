@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-import hashlib
+import hmac
 import json
 import os
 import re
@@ -80,6 +80,8 @@ class Cloud:
         self.bucket_prefix = f"{c['bucket_prefix']}-{self.region}-"
         self.log_group = f"/aws/lambda/{self.fn}"
         self.tags = c.get("tags", {})
+        if not self.tags:
+            raise RuntimeError("config 의 cloud.tags 가 비어 있으면 이 과제의 자원을 구분할 수 없습니다")
         self.s3 = self.session.client("s3")
         self.iam = self.session.client("iam")
         self.lam = self.session.client("lambda")
@@ -87,7 +89,8 @@ class Cloud:
         configured = c.get("bucket")
         if configured and not configured.startswith(f"{c['bucket_prefix']}-"):
             raise RuntimeError(f"cloud.bucket 은 {c['bucket_prefix']}- 로 시작해야 합니다: {configured}")
-        self.bucket = configured or self.find_bucket()
+        self.buckets = [configured] if configured else self.find_buckets()
+        self.bucket = self.buckets[0] if len(self.buckets) == 1 else None
 
     def info(self) -> dict:
         return {"region": self.region, "profile": self.profile, "caller_type": self.caller_type,
@@ -102,13 +105,11 @@ class Cloud:
     def ours(self, tags: dict) -> bool:
         return all(tags.get(k) == v for k, v in self.tags.items())
 
-    def find_bucket(self) -> str | None:
+    def find_buckets(self) -> list[str]:
         names = []
         for page in self.s3.get_paginator("list_buckets").paginate():
             names += [b["Name"] for b in page.get("Buckets", []) if b["Name"].startswith(self.bucket_prefix)]
-        if len(names) > 1:
-            raise RuntimeError(f"버킷이 여러 개입니다 {names}. config/pipeline.json 의 cloud.bucket 에 하나를 적으세요")
-        return names[0] if names else None
+        return sorted(names)
 
     def bucket_tags(self) -> dict:
         from botocore.exceptions import ClientError
@@ -147,6 +148,9 @@ class Cloud:
             "TagSet": [{"Key": k, "Value": v} for k, v in self.tags.items()]})
 
     def ensure_bucket(self) -> str:
+        if len(self.buckets) > 1:
+            raise RuntimeError(f"버킷이 여러 개입니다 {self.buckets}. cleanup 으로 정리하거나 "
+                               "config/pipeline.json 의 cloud.bucket 에 하나를 적으세요")
         if self.bucket:
             self.s3.head_bucket(Bucket=self.bucket)
             tags = self.bucket_tags()
@@ -163,6 +167,7 @@ class Cloud:
             self.s3.create_bucket(Bucket=self.bucket, **kwargs)
             self.s3.get_waiter("bucket_exists").wait(Bucket=self.bucket)
             self.tag_bucket()
+            self.buckets = [self.bucket]
             created = "created"
         self.s3.put_public_access_block(Bucket=self.bucket, PublicAccessBlockConfiguration={
             "BlockPublicAcls": True, "IgnorePublicAcls": True,
@@ -368,23 +373,31 @@ class Cloud:
                 "type": body.get("errorType")}}}, meta
         return body, meta
 
-    def bucket_status(self) -> dict:
+    def one_bucket_status(self, name: str) -> dict:
         from botocore.exceptions import ClientError
 
-        if not self.bucket:
-            return {"exists": False}
         try:
-            self.s3.head_bucket(Bucket=self.bucket)
+            self.s3.head_bucket(Bucket=name)
         except ClientError as e:
             if _code(e) in NOT_FOUND:
-                return {"exists": False}
-            return {"exists": None, "error": _code(e)}
+                return {"exists": False, "name": name}
+            return {"exists": None, "name": name, "error": _code(e)}
         n, size = 0, 0
-        for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=self.bucket):
+        for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=name):
             for v in page.get("Versions", []):
                 n += 1
                 size += v["Size"]
-        return {"exists": True, "name": self.bucket, "object_versions": n, "total_mb": round(size / 1e6, 2)}
+        return {"exists": True, "name": name, "object_versions": n, "total_mb": round(size / 1e6, 2)}
+
+    def bucket_status(self) -> dict:
+        found = [self.one_bucket_status(b) for b in self.buckets]
+        if not found:
+            return {"exists": False}
+        if len(found) == 1:
+            return found[0]
+        states = [b["exists"] for b in found]
+        combined = None if None in states else any(states)
+        return {"exists": combined, "buckets": found}
 
     def regional_status(self) -> dict:
         out = {}
@@ -442,27 +455,33 @@ class Cloud:
             self.require_ours(f"로그 그룹 {self.log_group}", self.log_group_tags())
             self.logs.delete_log_group(logGroupName=self.log_group)
 
-        def del_bucket():
-            if not self.bucket:
-                raise ClientError({"Error": {"Code": "NoSuchBucket", "Message": "버킷 없음"}}, "HeadBucket")
-            self.s3.head_bucket(Bucket=self.bucket)
+        def del_bucket(name):
+            self.s3.head_bucket(Bucket=name)
+            self.bucket = name
             tags = self.bucket_tags()
             if not self.ours(tags) and not self.leftover_bucket(tags):
-                self.require_ours(f"버킷 {self.bucket}", tags)
-            for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=self.bucket):
+                self.require_ours(f"버킷 {name}", tags)
+            for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=name):
                 objs = [{"Key": v["Key"], "VersionId": v["VersionId"]}
                         for v in page.get("Versions", []) + page.get("DeleteMarkers", [])]
                 if objs:
-                    r = self.s3.delete_objects(Bucket=self.bucket, Delete={"Objects": objs, "Quiet": True})
+                    r = self.s3.delete_objects(Bucket=name, Delete={"Objects": objs, "Quiet": True})
                     if r.get("Errors"):
                         err = r["Errors"][0]
                         raise ClientError({"Error": {"Code": err.get("Code", "DeleteObjectsError"),
                                                      "Message": err.get("Message", "")}}, "DeleteObjects")
-            self.s3.delete_bucket(Bucket=self.bucket)
+            self.s3.delete_bucket(Bucket=name)
+
+        def no_bucket():
+            raise ClientError({"Error": {"Code": "NoSuchBucket", "Message": "버킷 없음"}}, "HeadBucket")
 
         self._delete(f"{self.region}:lambda:{self.fn}", del_function, done)
         self._delete(f"{self.region}:logs:{self.log_group}", del_log_group, done)
-        self._delete(f"{self.region}:s3:{self.bucket}", del_bucket, done)
+        for name in self.buckets:
+            self._delete(f"{self.region}:s3:{name}", lambda n=name: del_bucket(n), done)
+        if not self.buckets:
+            self._delete(f"{self.region}:s3:{self.bucket_prefix}*", no_bucket, done)
+        self.bucket = self.buckets[0] if len(self.buckets) == 1 else None
         return done
 
     def cleanup_role(self) -> list[dict]:
@@ -503,8 +522,16 @@ def all_gone(resources: dict) -> bool:
     return resources["iam_role"].get("exists") is False and all(v.get("exists") is False for v in regional)
 
 
+def _local_key() -> bytes:
+    path = REGIONS_STATE.parent / "local_key"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(pysecrets.token_hex(32), encoding="utf-8")
+    return path.read_text(encoding="utf-8").strip().encode()
+
+
 def account_key(account: str) -> str:
-    return hashlib.sha256(account.encode()).hexdigest()
+    return hmac.new(_local_key(), account.encode(), "sha256").hexdigest()
 
 
 def deployments() -> list[dict]:
@@ -581,11 +608,16 @@ def preflight_problems(model_meta: dict, model_file_sha: str, evaluation: dict, 
 
 
 def deploy_preflight(cfg: dict, lambda_cfg: dict) -> dict:
+    import joblib
+
     from . import package
-    from .data import model_mismatches, split_problems
+    from .data import estimator_mismatch, model_mismatches, split_problems
 
     meta = load_json(model_dir(cfg) / "metadata.json")
     pdir = ROOT / cfg["data"]["processed_dir"]
+    mismatch = model_mismatches(meta, cfg)
+    if not mismatch and estimator_mismatch(joblib.load(model_dir(cfg) / "model.joblib"), cfg):
+        mismatch.append("모델 파일의 하이퍼파라미터")
     pkg = _load_or_empty(RESULTS / "cloud" / "package.json")
     zip_path = package.ZIP_PATH
     problems = preflight_problems(
@@ -599,7 +631,7 @@ def deploy_preflight(cfg: dict, lambda_cfg: dict) -> dict:
         requirements_sha=sha256_file(package.REQUIREMENTS),
         criteria=cfg["evaluation"]["criteria"],
         test_sha=sha256_file(pdir / "test.csv"),
-        model_mismatch=model_mismatches(meta, cfg),
+        model_mismatch=mismatch,
         split_mismatch=split_problems(cfg, pd.read_csv(pdir / "train.csv"), pd.read_csv(pdir / "test.csv")),
         lambda_cfg=lambda_cfg,
     )
@@ -686,7 +718,7 @@ def step_smoke(ctx) -> None:
 
 
 def step_cloud_eval(ctx) -> None:
-    from .data import records
+    from .data import evaluation_rows, records
 
     cfg = ctx.cfg
     cloud, version, expected, invoke = _cloud_invoker(ctx)
@@ -695,7 +727,7 @@ def step_cloud_eval(ctx) -> None:
     local_path = RESULTS / "evaluation" / "predictions_test.csv"
     ctx.add_input(test_path)
     ctx.add_input(local_path)
-    test = pd.read_csv(test_path)
+    test, _ = evaluation_rows(pd.read_csv(test_path))
     local = pd.read_csv(local_path)
     if len(local) != len(test) or not (local.datetime.to_numpy() == test.datetime.to_numpy()).all():
         raise RuntimeError("로컬 예측 파일과 평가 자료의 행이 맞지 않습니다. evaluate 단계를 다시 실행하세요")
@@ -807,7 +839,11 @@ def step_status(ctx) -> None:
 def step_cleanup(ctx) -> None:
     clouds = _clouds(ctx)
     before = _status_all(clouds)
-    deleted = [d for c in clouds for d in c.cleanup_regional()] + clouds[0].cleanup_role()
+    deleted = [d for c in clouds for d in c.cleanup_regional()]
+    if all(d["result"] in ("deleted", "not_found") for d in deleted):
+        deleted += clouds[0].cleanup_role()
+    else:
+        deleted.append({"resource": f"iam:{clouds[0].role}", "result": "kept: 남은 지역 자원이 이 역할을 쓸 수 있어 지우지 않음"})
     after = _status_all(clouds)
     for _ in range(STATUS_RETRIES):
         if all_gone(after):

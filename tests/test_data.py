@@ -50,3 +50,23 @@ def test_split_problems_detects_changed_periods():
     assert split_problems(moved, train, test) == ["학습 자료 기간"]
     shorter = {**CFG, "split": {**CFG["split"], "test_end": "2012-11-30"}}
     assert split_problems(shorter, train, test) == ["평가 자료 기간"]
+
+
+def test_model_mismatches_detects_each_change():
+    import json
+
+    from bikeml.common import model_dir
+    from bikeml.data import model_mismatches
+    meta = json.loads((model_dir(CFG) / "metadata.json").read_text(encoding="utf-8"))
+    assert model_mismatches(meta, CFG) == []
+    assert model_mismatches({**meta, "params": {**meta["params"], "max_iter": 5}}, CFG) == ["하이퍼파라미터"]
+    assert model_mismatches({**meta, "version": "other"}, CFG) == ["모델 버전"]
+    assert model_mismatches({**meta, "feature_code_sha256": "0"}, CFG) == ["특성 코드"]
+    assert model_mismatches({**meta, "train_data": {"sha256": "0"}}, CFG) == ["학습 자료"]
+
+
+def test_evaluation_rows_drop_missing_humidity():
+    from bikeml.data import evaluation_rows
+    df = to_requests(load_raw(CFG))
+    kept, dropped = evaluation_rows(df)
+    assert dropped == 22 and kept.humidity.notna().all() and len(kept) == len(df) - 22
