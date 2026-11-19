@@ -44,15 +44,20 @@ def _download(uri: str) -> str:
 
 
 def _runtime() -> dict:
-    import boto3
     import numpy
     import sklearn
 
+    try:
+        import boto3
+
+        boto3_version = boto3.__version__
+    except ImportError:
+        boto3_version = None
     return {
         "python": platform.python_version(),
         "scikit-learn": sklearn.__version__,
         "numpy": numpy.__version__,
-        "boto3": boto3.__version__,
+        "boto3": boto3_version,
         "execution_env": os.environ.get("AWS_EXECUTION_ENV", "local"),
     }
 

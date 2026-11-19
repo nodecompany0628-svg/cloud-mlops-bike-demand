@@ -473,3 +473,44 @@ def test_region_not_enabled_is_skipped(sandbox, monkeypatch):
         rc = run(["cleanup"])
     clean = read(sandbox, "results/cloud/cleanup.json")
     assert rc == 0 and clean["regions_unreachable"][0]["blocking"] is False
+
+
+def test_bucket_from_failed_deploy_is_still_cleaned(sandbox, monkeypatch):
+    cfg = load_config()
+    cfg["cloud"]["bucket"] = "bike-demand-mlops-mine"
+
+    def boom(self, *a, **kw):
+        raise RuntimeError("deploy_function failed")
+    with mock_aws():
+        monkeypatch.setattr(cloud.Cloud, "deploy_function", boom)
+        assert runlog.run_steps(["deploy"], STEPS, cfg, make_args(steps=["deploy"]), DEFAULT_CONFIG) == 1
+        assert records(sandbox)[-1]["cloud"]["bucket"] == "bike-demand-mlops-mine"
+        rc = run(["cleanup"])
+        left = [b["Name"] for b in boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]]
+    assert rc == 0 and left == []
+
+
+def test_recorded_bucket_of_another_account_is_skipped(sandbox, monkeypatch):
+    real_region = cloud.Cloud.bucket_region
+    runlog.RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"run_id": "x", "step": "deploy", "status": "success",
+                            "cloud": {"region": "ap-northeast-2", "bucket": "bike-demand-mlops-theirs"}}) + "\n")
+
+    def region(self, name):
+        if name == "bike-demand-mlops-theirs":
+            raise ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetBucketLocation")
+        return real_region(self, name)
+    with mock_aws():
+        monkeypatch.setattr(cloud.Cloud, "bucket_region", region)
+        assert run(["cleanup"]) == 0
+
+
+def test_bucket_name_that_only_looks_like_a_region_is_ignored(sandbox):
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="ap-northeast-2")
+        s3.create_bucket(Bucket="bike-demand-mlops-my-test-1-0a1b2c3d",
+                         CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"})
+        assert run(["status"]) == 0
+    status = read(sandbox, "results/cloud/status.json")
+    assert "my-test-1" not in status["regions_checked"] and status["regions_unreachable"] == []

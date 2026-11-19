@@ -124,8 +124,10 @@ class Cloud:
         return sorted(n for n in self.all_bucket_names() if n.startswith(self.bucket_prefix))
 
     def bucket_regions(self) -> set[str]:
+        known = set(self.session.get_available_regions("lambda"))
         pattern = re.compile(re.escape(self.bucket_base) + r"-([a-z]{2}(?:-[a-z]+)+-\d+)-[0-9a-f]{8}")
-        return {m.group(1) for n in self.all_bucket_names() if (m := pattern.fullmatch(n))}
+        found = {m.group(1) for n in self.all_bucket_names() if (m := pattern.fullmatch(n))}
+        return found & known
 
     def bucket_region(self, name: str) -> str | None:
         from botocore.exceptions import ClientError
@@ -691,7 +693,9 @@ def step_deploy(ctx) -> None:
     remember_region(cloud.account, cloud.region)
 
     res = {"cloud": cloud.info()}
+    ctx.cloud = cloud.info()
     res["bucket"] = cloud.ensure_bucket()
+    ctx.cloud = cloud.info()
     res["role"] = cloud.ensure_role()
     res["log_group"] = cloud.ensure_log_group(lcfg["log_retention_days"])
 
@@ -874,7 +878,12 @@ def _clouds(ctx) -> tuple[list[Cloud], list[dict]]:
     extra = {}
     for name in recorded_buckets():
         if name.startswith(f"{first.bucket_base}-"):
-            region = first.bucket_region(name)
+            try:
+                region = first.bucket_region(name)
+            except ClientError as e:
+                if _code(e) not in ("AccessDenied", "403", "AllAccessDisabled"):
+                    raise
+                region = None
             if region:
                 extra.setdefault(region, set()).add(name)
     own = first.bucket_regions() | set(extra)

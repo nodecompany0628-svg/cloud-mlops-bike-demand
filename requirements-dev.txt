@@ -1,2 +1,22 @@
 pytest==9.2.0
 moto[s3,iam,awslambda,logs,sts]==5.2.5
+certifi==2026.10.23
+cffi==2.1.1
+charset-normalizer==3.5.2
+colorama==0.4.6; sys_platform == "win32"
+cryptography==50.0.2
+docker==7.2.0
+idna==3.20
+iniconfig==2.3.1
+markupsafe==3.0.4
+packaging==26.3
+pluggy==1.7.0
+py-partiql-parser==0.6.3
+pycparser==3.12
+pygments==2.21.0
+pywin32==312; sys_platform == "win32"
+pyyaml==6.0.3
+requests==2.34.2
+responses==0.26.3
+werkzeug==3.1.9
+xmltodict==1.0.4
