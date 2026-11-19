@@ -214,6 +214,13 @@ def test_odd_run_log_lines_count_as_unreadable(isolated):
     runlog.print_runs()
 
 
+def test_runs_with_zero_limit_prints_no_rows(isolated, capsys):
+    runlog.RUN_LOG.parent.mkdir(parents=True)
+    runlog.RUN_LOG.write_text(json.dumps({"run_id": "a", "step": "s", "status": "success"}) + "\n", encoding="utf-8")
+    runlog.print_runs(0)
+    assert len(capsys.readouterr().out.strip().splitlines()) == 1
+
+
 def test_config_path_outside_repo_is_not_recorded(isolated, tmp_path):
     outside = tmp_path / "elsewhere" / "my_config.json"
     args = argparse.Namespace(config=str(outside), lambda_config=str(outside), cmd="run", steps=["ok"])

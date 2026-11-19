@@ -131,3 +131,4 @@ def test_candidate_with_wrong_sha_falls_back_to_published_model(isolated):
     assert run_evaluate() == 0
     metrics = json.loads((root / "results" / "evaluation" / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["model_source"] == "published"
+    assert len(metrics["models_not_used"]) == 1 and "candidate: 모델 파일 sha256" in metrics["models_not_used"][0]

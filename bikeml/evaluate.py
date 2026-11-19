@@ -54,7 +54,7 @@ def load_model(cfg):
         if estimator_mismatch(model, cfg):
             tried.append(f"{source}: 모델 파일의 하이퍼파라미터")
             continue
-        return model, meta, path, source
+        return model, meta, path, source, tried
     raise RuntimeError(f"지금 설정과 맞는 모델이 없습니다 ({'; '.join(tried) or '모델 없음'}). train 을 먼저 실행하세요")
 
 
@@ -77,7 +77,9 @@ def step_evaluate(ctx) -> None:
     bad = split_problems(cfg, train, test)
     if bad:
         raise RuntimeError(f"{', '.join(bad)}이 config 의 split 과 다릅니다. prepare 를 먼저 실행하세요")
-    model, meta, mpath, source = load_model(cfg)
+    model, meta, mpath, source, not_used = load_model(cfg)
+    if not_used:
+        print(f"  쓰지 않은 모델: {'; '.join(not_used)}. {source} 모델을 평가합니다")
     ctx.model = {"name": meta["name"], "version": meta["version"], "sha256": meta["model_sha256"]}
     for p in (pdir / "train.csv", pdir / "test.csv", mpath):
         ctx.add_input(p)
@@ -141,6 +143,7 @@ def step_evaluate(ctx) -> None:
     report = {
         "model": ctx.model,
         "model_source": source,
+        "models_not_used": not_used,
         "eval_data": {"path": "data/processed/test.csv", "sha256": sha256_file(pdir / "test.csv"),
                       "rows": int(len(test)), "excluded_missing_humidity": excluded,
                       "first": test.datetime.min(), "last": test.datetime.max(),
@@ -155,7 +158,7 @@ def step_evaluate(ctx) -> None:
     write_json(ctx.out("results/evaluation/metrics.json"), report)
     ctx.summary = {"model_mae": mae, "baseline_hour_mean_mae": result["baseline_hour_mean"]["mae"],
                    "baseline_mean_mae": result["baseline_mean"]["mae"], "passed": bool(passed),
-                   "model_source": source}
+                   "model_source": source, "models_not_used": not_used}
     if not passed:
         raise RuntimeError(f"합격 기준 미달: {checks}")
     published = f"models/{cfg['model']['version']}"

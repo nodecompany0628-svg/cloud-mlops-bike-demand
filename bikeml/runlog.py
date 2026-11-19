@@ -323,7 +323,7 @@ def print_runs(limit: int = 30) -> None:
         return
     rows, _ = read_run_log()
     print(f"{'run_id':24} {'step':12} {'status':8} {'commit':8} {'model':8} {'finished_at':26} error")
-    for r in rows[-limit:]:
+    for r in (rows[-limit:] if limit > 0 else []):
         commit = _text(r, "git", "commit")[:7]
         model = _text(r, "model", "version")
         err = _text(r, "error")[:60]

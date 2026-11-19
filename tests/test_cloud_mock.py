@@ -809,3 +809,26 @@ def test_status_records_unknown_role_state(sandbox, monkeypatch):
         rc = run(["status"])
     status = failed_result(sandbox, records(sandbox)[-1], "results/cloud/status.json")
     assert rc == 1 and status["resources"]["iam_role"] == {"exists": None, "error": "AccessDenied"}
+
+
+def test_renamed_config_requires_cleanup_with_old_names(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    renamed = load_config()
+    renamed["cloud"]["function_name"] = "bike-demand-predict-2"
+
+    def run_renamed(step):
+        return runlog.run_steps([step], STEPS, renamed, make_args(steps=[step]), DEFAULT_CONFIG)
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        rc_deploy = run_renamed("deploy")
+        rc_status = run_renamed("status")
+        rc_new = run_renamed("cleanup")
+        functions = [f["FunctionName"] for f in boto3.client("lambda", region_name="ap-northeast-2").list_functions()["Functions"]]
+        roles = [r["RoleName"] for r in boto3.client("iam", region_name="ap-northeast-2").list_roles()["Roles"]]
+        rc_old = run(["cleanup"])
+        rc_after = run_renamed("status")
+    recs = records(sandbox)
+    assert rc_deploy == 1 and "이전 이름" in recs[1]["error"] and recs[1]["cloud"] is None
+    assert rc_status == 1 and rc_new == 1 and "이전 이름" in recs[3]["error"]
+    assert functions == ["bike-demand-predict"] and roles == ["bike-demand-predict-role"]
+    assert rc_old == 0 and rc_after == 0
