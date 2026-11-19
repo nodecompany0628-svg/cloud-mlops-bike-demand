@@ -70,6 +70,9 @@ def _redactions(secrets: list[str]) -> list[tuple[str, str]]:
     return pairs
 
 
+PRINCIPAL = re.compile(r"((?:user|assumed-role|federated-user)/)[^\s\\\"',;)]+")
+
+
 def _user_pattern() -> re.Pattern | None:
     name = Path.home().name
     return re.compile(r"(Users[\\/]+)" + re.escape(name)) if name else None
@@ -79,6 +82,7 @@ def sanitize(obj, secrets: list[str]):
     if isinstance(obj, str):
         for s, repl in _redactions(secrets):
             obj = obj.replace(s, repl)
+        obj = PRINCIPAL.sub(r"\1<NAME>", obj)
         pat = _user_pattern()
         return pat.sub(r"\1<USER>", obj) if pat else obj
     if isinstance(obj, dict):
@@ -184,6 +188,7 @@ def run_steps(step_names: list[str], registry: dict, cfg: dict, args, config_pat
         started = now_iso()
         t0 = time.perf_counter()
         error = None
+        interrupted = False
         try:
             registry[name](ctx)
             unreadable = _scrub(stage, secrets)
@@ -192,9 +197,10 @@ def run_steps(step_names: list[str], registry: dict, cfg: dict, args, config_pat
             _promote(stage)
             status = "success"
             result_location = ctx.outputs
-        except Exception as e:
+        except (Exception, KeyboardInterrupt) as e:
+            interrupted = isinstance(e, KeyboardInterrupt)
             status = "failed"
-            error = f"{type(e).__name__}: {e}"
+            error = "KeyboardInterrupt: 사용자가 중단함" if interrupted else f"{type(e).__name__}: {e}"
             (stage / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
             for bad in _scrub(stage, secrets):
                 (stage / bad).unlink()
@@ -235,7 +241,7 @@ def run_steps(step_names: list[str], registry: dict, cfg: dict, args, config_pat
                 }, secrets))
                 print(f"[SKIP] {skipped}")
             _cleanup_staging(run_id)
-            return 1
+            return 130 if interrupted else 1
     _cleanup_staging(run_id)
     return 0
 

@@ -44,6 +44,7 @@ def sandbox(tmp_path, monkeypatch):
                  "AWS_SESSION_TOKEN": "testing", "AWS_DEFAULT_REGION": "ap-northeast-2"}.items():
         monkeypatch.setenv(k, v)
     monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.setenv("BIKEML_USE_ENV_CREDENTIALS", "1")
     for k in ("MODEL_URI", "MODEL_VERSION", "MODEL_SHA256"):
         monkeypatch.setenv(k, "")
 
@@ -100,7 +101,8 @@ def test_cloud_steps_end_to_end(sandbox):
     deploy = read(sandbox, "results/cloud/deploy.json")
     assert recs[0]["cloud"]["function_version"] == "1"
     assert deploy["function"]["action"] == "updated" and deploy["function"]["version"].isdigit()
-    assert deploy["env"]["MODEL_URI"].endswith("/models/hgb-v1/model.joblib")
+    assert "/models/hgb-v1/model.joblib?versionId=" in deploy["env"]["MODEL_URI"]
+    assert deploy["model_uri_override"] is False
     assert deploy["cloud"]["bucket"].startswith("bike-demand-mlops-ap-northeast-2-")
     assert deploy["cloud"]["caller_type"] == "user" and "caller" not in deploy["cloud"]
     assert recs[1]["cloud"]["bucket"] == recs[0]["cloud"]["bucket"]
@@ -123,6 +125,19 @@ def test_cloud_steps_end_to_end(sandbox):
     for t in texts:
         assert MOTO_ACCOUNT not in t and "user/moto" not in t
         assert str(ROOT) not in t and str(ROOT).replace("\\", "\\\\") not in t
+
+
+def test_override_deploy_is_recorded_separately(sandbox):
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        args = make_args(steps=["deploy"], model_uri_override="s3://bucket/models/hgb-v1/model.pkl")
+        rc = runlog.run_steps(["deploy"], STEPS, load_config(), args, DEFAULT_CONFIG)
+    assert rc == 0
+    normal = read(sandbox, "results/cloud/deploy.json")
+    broken = read(sandbox, "results/cloud/deploy_override.json")
+    assert normal["model_uri_override"] is False and "?versionId=" in normal["env"]["MODEL_URI"]
+    assert broken["model_uri_override"] is True and broken["env"]["MODEL_URI"].endswith("model.pkl")
+    assert records(sandbox)[-1]["summary"]["model_uri_override"] is True
 
 
 def test_cleanup_when_nothing_exists(sandbox):
@@ -168,8 +183,7 @@ def test_deploy_stops_before_aws_when_preflight_fails(sandbox, monkeypatch):
 
 
 def test_cloud_step_requires_explicit_profile(sandbox, monkeypatch):
-    for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
-        monkeypatch.delenv(k)
+    monkeypatch.delenv("BIKEML_USE_ENV_CREDENTIALS")
     monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(sandbox / "none-credentials"))
     monkeypatch.setenv("AWS_CONFIG_FILE", str(sandbox / "none-config"))
     rc = run(["status", "cleanup"])

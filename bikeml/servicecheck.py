@@ -7,7 +7,8 @@ import os
 import sys
 import time
 
-from .common import ROOT, load_json, model_dir, write_json
+from .common import ROOT, load_json, model_dir, sha256_file, write_json
+from .package import APP_FILES
 from .runlog import sanitize
 
 CASES_FILE = ROOT / "samples" / "service_cases.json"
@@ -158,6 +159,7 @@ def step_check_local(ctx) -> None:
     ctx.model = {"name": inv.name, "version": inv.expected_model["version"], "sha256": inv.expected_model["sha256"]}
     ctx.add_input(ROOT / "samples" / "service_cases.json")
     report = run_cases(inv, inv.expected_model, "local", ctx.cfg)
+    report["app_files"] = {arc: sha256_file(src) for arc, src in APP_FILES.items()}
     day = sample_day_comparison(report.pop("responses"), ctx.cfg)
     report["sample_day"] = day
     write_json(ctx.out("results/service_check/local.json"), report)

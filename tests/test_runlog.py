@@ -24,6 +24,15 @@ def test_sanitize_hides_account_inside_tuples_and_lists():
     assert isinstance(clean, tuple) and "111122223333" not in json.dumps(clean)
 
 
+def test_sanitize_hides_principal_names_but_keeps_role_name():
+    msg = ("User: arn:aws:iam::1:user/kim-student is not authorized; "
+           "arn:aws:sts::1:assumed-role/Admin/me@example.com; role/bike-demand-predict-role")
+    for text in (msg, json.dumps({"e": msg})):
+        clean = runlog.sanitize(text, [])
+        assert "kim-student" not in clean and "me@example.com" not in clean
+        assert "role/bike-demand-predict-role" in clean
+
+
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(runlog, "ROOT", tmp_path)
@@ -97,3 +106,12 @@ def test_non_utf8_output_fails_the_step(isolated):
     assert "UTF-8" in r[0]["error"]
     assert not (isolated / "results" / "x.csv").exists()
     assert not (isolated / "results" / "failed" / f"{r[0]['run_id']}_step" / "results" / "x.csv").exists()
+
+
+def test_interrupt_is_recorded_and_stops(isolated):
+    def stop(ctx):
+        raise KeyboardInterrupt
+
+    assert run(["stop", "after"], {"stop": stop, "after": lambda ctx: None}) == 130
+    r = recs(isolated)
+    assert [x["status"] for x in r] == ["failed", "skipped"] and "KeyboardInterrupt" in r[0]["error"]

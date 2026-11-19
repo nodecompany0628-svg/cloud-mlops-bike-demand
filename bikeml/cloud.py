@@ -44,15 +44,16 @@ class Cloud:
         c = cfg["cloud"]
         self.profile = resolve_profile(cfg, getattr(args, "profile", None))
         self.region = resolve_region(cfg, getattr(args, "region", None))
-        if not self.profile and not os.environ.get("AWS_ACCESS_KEY_ID"):
-            raise RuntimeError("AWS 프로필을 --profile 또는 환경 변수 AWS_PROFILE 로 지정하세요")
+        if not self.profile and os.environ.get("BIKEML_USE_ENV_CREDENTIALS") != "1":
+            raise RuntimeError("AWS 프로필을 --profile 또는 환경 변수 AWS_PROFILE 로 지정하세요. "
+                               "환경 변수의 키를 쓰려면 BIKEML_USE_ENV_CREDENTIALS=1 을 함께 지정하세요")
         self.session = boto3.Session(profile_name=self.profile, region_name=self.region)
         ident = self.session.client("sts").get_caller_identity()
         self.account = ident["Account"]
         self.caller_type = ident["Arn"].split(":", 5)[5].split("/")[0]
         if ctx is not None and self.account not in ctx.secrets:
             ctx.secrets.append(self.account)
-        print(f"  AWS 계정 …{self.account[-4:]} / {ident['Arn'].split(':', 5)[5]} / 프로필 {self.profile} / 리전 {self.region}")
+        print(f"  AWS 계정 ...{self.account[-4:]} / {self.caller_type} / 프로필 {self.profile} / 리전 {self.region}")
         self.fn = c["function_name"]
         self.role = c["role_name"]
         self.bucket_prefix = f"{c['bucket_prefix']}-{self.region}-"
@@ -114,7 +115,7 @@ class Cloud:
                 {"Sid": "WriteOwnLogs", "Effect": "Allow",
                  "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
                  "Resource": f"arn:aws:logs:{self.region}:{self.account}:log-group:{self.log_group}:*"},
-                {"Sid": "ReadModels", "Effect": "Allow", "Action": "s3:GetObject",
+                {"Sid": "ReadModels", "Effect": "Allow", "Action": ["s3:GetObject", "s3:GetObjectVersion"],
                  "Resource": f"arn:aws:s3:::{self.bucket}/models/*"},
             ],
         }
@@ -171,7 +172,7 @@ class Cloud:
                 except self.lam.exceptions.InvalidParameterValueException as e:
                     if "cannot be assumed" not in str(e) or attempt == 9:
                         raise
-                    print(f"  IAM 역할 전파 대기 중… ({attempt + 1}/10)")
+                    print(f"  IAM 역할 전파 대기 중... ({attempt + 1}/10)")
                     time.sleep(6)
             self.lam.get_waiter("function_active_v2").wait(FunctionName=self.fn)
             action = "created"
@@ -316,7 +317,11 @@ class Cloud:
                 objs = [{"Key": v["Key"], "VersionId": v["VersionId"]}
                         for v in page.get("Versions", []) + page.get("DeleteMarkers", [])]
                 if objs:
-                    self.s3.delete_objects(Bucket=self.bucket, Delete={"Objects": objs, "Quiet": True})
+                    r = self.s3.delete_objects(Bucket=self.bucket, Delete={"Objects": objs, "Quiet": True})
+                    if r.get("Errors"):
+                        err = r["Errors"][0]
+                        raise ClientError({"Error": {"Code": err.get("Code", "DeleteObjectsError"),
+                                                     "Message": err.get("Message", "")}}, "DeleteObjects")
             self.s3.delete_bucket(Bucket=self.bucket)
         step(f"s3:{self.bucket}", del_bucket)
         return done
@@ -357,14 +362,19 @@ def _load_or_empty(path) -> dict:
 
 
 def preflight_problems(model_sha: str, model_file_sha: str, evaluation: dict, service_check: dict,
-                       package_info: dict, zip_sha: str | None, app_files: dict, requirements_sha: str) -> list[str]:
+                       package_info: dict, zip_sha: str | None, app_files: dict, requirements_sha: str,
+                       criteria: dict, test_sha: str) -> list[str]:
     problems = []
     if model_file_sha != model_sha:
         problems.append("모델 파일이 metadata.json 의 sha256 과 다름")
     if not evaluation.get("passed") or (evaluation.get("model") or {}).get("sha256") != model_sha:
         problems.append("이 모델로 evaluate 를 통과한 기록이 없음")
+    elif evaluation.get("criteria") != criteria or (evaluation.get("eval_data") or {}).get("sha256") != test_sha:
+        problems.append("evaluate 이후 합격 기준이나 평가 자료가 바뀜")
     if not service_check.get("all_passed") or (service_check.get("model") or {}).get("sha256") != model_sha:
         problems.append("이 모델로 check-local 을 통과한 기록이 없음")
+    elif service_check.get("app_files") != app_files:
+        problems.append("check-local 이후 Lambda 코드가 바뀜")
     if zip_sha is None or zip_sha != package_info.get("zip_sha256"):
         problems.append("build/lambda_package.zip 이 없거나 package.json 과 다름")
     if package_info.get("app_files") != app_files or package_info.get("requirements_sha256") != requirements_sha:
@@ -387,6 +397,8 @@ def deploy_preflight(cfg: dict) -> dict:
         zip_sha=sha256_file(zip_path) if zip_path.exists() else None,
         app_files={arc: sha256_file(src) for arc, src in package.APP_FILES.items()},
         requirements_sha=sha256_file(package.REQUIREMENTS),
+        criteria=cfg["evaluation"]["criteria"],
+        test_sha=sha256_file(ROOT / cfg["data"]["processed_dir"] / "test.csv"),
     )
     if problems:
         raise RuntimeError("배포 전 확인 실패: " + "; ".join(problems)
@@ -416,7 +428,10 @@ def step_deploy(ctx) -> None:
     code_key = f"packages/lambda-{pkg_sha[:12]}.zip"
     res["package_upload"] = cloud.upload(zip_path, code_key, {"sha256": pkg_sha})
 
-    model_uri = getattr(ctx.args, "model_uri_override", None) or f"s3://{cloud.bucket}/{model_key}"
+    override = getattr(ctx.args, "model_uri_override", None)
+    if not res["model_upload"]["version_id"]:
+        raise RuntimeError("버킷 버전 관리가 켜져 있지 않아 모델 파일 버전을 고정할 수 없습니다")
+    model_uri = override or f"s3://{cloud.bucket}/{model_key}?versionId={res['model_upload']['version_id']}"
     env = {"MODEL_URI": model_uri, "MODEL_VERSION": meta["version"], "MODEL_SHA256": meta["model_sha256"],
            "JOBLIB_MULTIPROCESSING": "0"}
     git = git_info()
@@ -425,12 +440,14 @@ def step_deploy(ctx) -> None:
     res["function"] = cloud.deploy_function(lcfg, code_key, env, desc)
     res["env"] = env
     res["cloud"] = cloud.info()
-    write_json(ctx.out("results/cloud/deploy.json"), res)
+    res["model_uri_override"] = bool(override)
+    write_json(ctx.out("results/cloud/deploy_override.json" if override else "results/cloud/deploy.json"), res)
     ctx.cloud = {**cloud.info(), "function_version": res["function"]["version"],
                  "code_sha256": res["function"]["code_sha256"], "model_uri": model_uri,
                  "package_uri": res["package_upload"]["uri"]}
     ctx.summary = {"function_version": res["function"]["version"], "action": res["function"]["action"],
-                   "memory_mb": lcfg["memory_mb"], "timeout_s": lcfg["timeout_s"]}
+                   "memory_mb": lcfg["memory_mb"], "timeout_s": lcfg["timeout_s"],
+                   "model_uri_override": bool(override)}
 
 
 def _cloud_invoker(ctx):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import compileall
+import py_compile
 import shutil
 import subprocess
 import sys
@@ -54,6 +56,11 @@ def build_package(lambda_cfg: dict) -> dict:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
 
+    precompiled = f"{sys.version_info.major}.{sys.version_info.minor}" == py
+    if precompiled:
+        compileall.compile_dir(PKG_DIR, quiet=2, stripdir=str(PKG_DIR), prependdir="/var/task",
+                               invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+
     unzipped = _dir_size(PKG_DIR)
     if unzipped > UNZIPPED_LIMIT:
         raise RuntimeError(f"압축 해제 크기 {unzipped / 1e6:.1f}MB 가 Lambda 한도 250MB 를 넘습니다")
@@ -77,6 +84,7 @@ def build_package(lambda_cfg: dict) -> dict:
         "removed_test_dirs_mb": round(removed / 1e6, 2),
         "file_count": len(files),
         "runtime": lambda_cfg["runtime"],
+        "precompiled_pyc": precompiled,
         "platforms": PLATFORMS,
         "installed": installed,
         "app_files": {arc: sha256_file(src) for arc, src in APP_FILES.items()},

@@ -43,3 +43,11 @@ def test_limits():
     r = handle({"instances": [GOOD] * (MAX_INSTANCES + 1)}, FakeModel(), INFO)
     assert r["body"]["error"]["code"] == "TOO_MANY_INSTANCES"
     assert handle({"instances": [GOOD] * MAX_INSTANCES}, FakeModel(), INFO)["statusCode"] == 200
+
+
+def test_half_rounds_up():
+    class Half:
+        def predict(self, X):
+            return np.array([2.5])
+    r = handle({"instances": [GOOD]}, Half(), INFO)
+    assert r["body"]["predictions"][0]["predicted_count"] == 3

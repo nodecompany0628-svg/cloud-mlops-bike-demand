@@ -86,3 +86,8 @@ def test_unexpected_error_during_predict():
     lf._CACHE["model"], lf._CACHE["info"] = Broken(), {"version": "x", "sha256": "y"}
     resp = lf.lambda_handler(GOOD, None)
     assert error_code(resp) == (500, "INTERNAL_ERROR") and "boom" in resp["body"]["error"]["message"]
+
+
+def test_parse_s3_uri_with_version():
+    assert lf.parse_s3_uri("s3://b/models/v1/model.joblib?versionId=abc") == ("b", "models/v1/model.joblib", "abc")
+    assert lf.parse_s3_uri("s3://b/models/v1/model.joblib") == ("b", "models/v1/model.joblib", None)

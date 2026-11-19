@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from .features import FieldError, to_features
@@ -41,7 +43,7 @@ def handle(payload, model, model_info: dict) -> dict:
     preds = [
         {
             "datetime": rec["datetime"],
-            "predicted_count": int(round(float(v))),
+            "predicted_count": int(math.floor(float(v) + 0.5)),
             "predicted_value": round(float(v), 2),
         }
         for rec, v in zip(instances, raw, strict=True)

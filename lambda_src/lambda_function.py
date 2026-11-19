@@ -24,14 +24,22 @@ def _sha256(path: str) -> str:
     return h.hexdigest()
 
 
+def parse_s3_uri(uri: str) -> tuple[str, str, str | None]:
+    rest = uri[len("s3://"):]
+    rest, _, query = rest.partition("?versionId=")
+    bucket, _, key = rest.partition("/")
+    return bucket, key, query or None
+
+
 def _download(uri: str) -> str:
     if not uri.startswith("s3://"):
         return uri
     import boto3
 
-    bucket, _, key = uri[len("s3://"):].partition("/")
+    bucket, key, version = parse_s3_uri(uri)
     local = "/tmp/model.joblib"
-    boto3.client("s3").download_file(bucket, key, local)
+    extra = {"VersionId": version} if version else None
+    boto3.client("s3").download_file(bucket, key, local, ExtraArgs=extra)
     return local
 
 
@@ -63,7 +71,7 @@ def _load_model():
         raise ModelLoadError(f"모델 파일을 가져오지 못했습니다 ({uri}): {type(e).__name__}: {e}") from e
     expected = os.environ.get("MODEL_SHA256")
     if expected and sha != expected:
-        raise ModelLoadError(f"모델 sha256 불일치: 기대 {expected[:12]}…, 실제 {sha[:12]}…")
+        raise ModelLoadError(f"모델 sha256 불일치: 기대 {expected[:12]}..., 실제 {sha[:12]}...")
     try:
         import joblib
 

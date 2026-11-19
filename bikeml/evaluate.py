@@ -34,7 +34,7 @@ def load_model(cfg):
     path = mdir / "model.joblib"
     sha = sha256_file(path)
     if sha != meta["model_sha256"]:
-        raise ValueError(f"모델 파일 sha256 이 metadata 와 다릅니다 ({sha[:12]}… != {meta['model_sha256'][:12]}…)")
+        raise ValueError(f"모델 파일 sha256 이 metadata 와 다릅니다 ({sha[:12]}... != {meta['model_sha256'][:12]}...)")
     return joblib.load(path), meta, path
 
 
@@ -117,7 +117,8 @@ def step_evaluate(ctx) -> None:
 
     report = {
         "model": ctx.model,
-        "eval_data": {"path": "data/processed/test.csv", "rows": int(len(test)),
+        "eval_data": {"path": "data/processed/test.csv", "sha256": sha256_file(pdir / "test.csv"),
+                      "rows": int(len(test)),
                       "first": test.datetime.min(), "last": test.datetime.max(),
                       "actual_mean": round(float(y.mean()), 2)},
         "unit": "대/시간 (daily_total_mae 는 대/일)",

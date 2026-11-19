@@ -36,7 +36,7 @@ def step_fetch(ctx) -> None:
             blob = r.read()
         got = hashlib.sha256(blob).hexdigest()
         if got != dcfg["zip_sha256"]:
-            raise RuntimeError(f"zip sha256 불일치: 기대 {dcfg['zip_sha256'][:12]}…, 실제 {got[:12]}…")
+            raise RuntimeError(f"zip sha256 불일치: 기대 {dcfg['zip_sha256'][:12]}..., 실제 {got[:12]}...")
         with zipfile.ZipFile(io.BytesIO(blob)) as z:
             for name in expected:
                 ctx.out(f"{dcfg['raw_dir']}/{name}").write_bytes(z.read(name))
