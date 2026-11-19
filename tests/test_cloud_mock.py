@@ -524,7 +524,7 @@ def write_deploy_record(cloud_fields):
 
 
 def test_recorded_bucket_name_that_is_not_valid_is_ignored(sandbox):
-    write_deploy_record({"bucket": "bike-demand-mlops-<ACCOUNT_ID>", "creating_bucket": []})
+    write_deploy_record({"bucket": "bike-demand-mlops-<ACCOUNT_ID>"})
     with mock_aws():
         assert run(["status"]) == 0
 
@@ -1112,7 +1112,8 @@ def test_changed_tags_make_cleanup_wait_for_the_old_config(sandbox, monkeypatch)
         functions = boto3.client("lambda", region_name="ap-northeast-2").list_functions()["Functions"]
         rc_old = run(["cleanup"])
         left = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
-    assert rc_status == 1 and rc_clean == 1 and len(functions) == 1
+    refused = failed_result(sandbox, records(sandbox)[2], "results/cloud/cleanup.json")
+    assert rc_status == 1 and rc_clean == 1 and len(functions) == 1 and refused["renamed_leftovers"][0]["tags"]["owner"] == "student"
     assert "태그" in records(sandbox)[2]["error"] and rc_old == 0 and left == []
 
 
@@ -1217,3 +1218,36 @@ def test_unexpected_error_while_checking_foreign_function_keeps_role():
                                                exceptions=SimpleNamespace(ResourceNotFoundException=NotFound)),
                            fn="bike-demand-predict")
     assert cloud.Cloud.foreign_function_uses_role(fake) is True
+
+
+def test_region_known_only_from_deploy_record_blocks_on_auth_error(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    real_init = cloud.Cloud.__init__
+    with mock_aws():
+        assert run(["deploy"], region="us-west-2") == 0
+        s3 = boto3.resource("s3", region_name="us-west-2")
+        for bucket in s3.buckets.all():
+            bucket.object_versions.delete()
+            bucket.delete()
+        cloud.REGIONS_STATE.unlink()
+
+        def init(self, cfg, args, ctx=None, region=None):
+            if region == "us-west-2":
+                raise ClientError({"Error": {"Code": "InvalidClientTokenId", "Message": "token"}}, "GetCallerIdentity")
+            real_init(self, cfg, args, ctx, region)
+        monkeypatch.setattr(cloud.Cloud, "__init__", init)
+        rc = run(["cleanup"])
+        functions = boto3.client("lambda", region_name="us-west-2").list_functions()["Functions"]
+    assert rc == 1 and "us-west-2" in records(sandbox)[-1]["error"] and len(functions) == 1
+
+
+def test_ctrl_c_during_cleanup_still_writes_result(sandbox, monkeypatch):
+    with mock_aws():
+        assert run(["deploy"]) == 0
+
+        def stop(self):
+            raise KeyboardInterrupt
+        monkeypatch.setattr(cloud.Cloud, "foreign_function_uses_role", stop)
+        rc = run(["cleanup"])
+    clean = failed_result(sandbox, records(sandbox)[-1], "results/cloud/cleanup.json")
+    assert rc == 130 and clean["interrupted"].startswith("KeyboardInterrupt") and clean["actions"]

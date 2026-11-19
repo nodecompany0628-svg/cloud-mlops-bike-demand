@@ -58,11 +58,19 @@ def env_info() -> dict:
     return {"python": platform.python_version(), "platform": platform.platform(), "libs": versions}
 
 
+def _escaped(text: str) -> list[str]:
+    out = []
+    for ascii_only in (False, True):
+        once = json.dumps(text, ensure_ascii=ascii_only)[1:-1]
+        out += [json.dumps(once, ensure_ascii=ascii_only)[1:-1], once]
+    return out + [text]
+
+
 def _path_variants(path: Path) -> list[str]:
     if path == Path(path.anchor):
         return []
-    raw = str(path)
-    return [raw.replace("\\", "\\" * 4), raw.replace("\\", "\\" * 2), raw, path.as_posix()]
+    variants = _escaped(str(path)) + _escaped(path.as_posix())
+    return sorted(set(variants), key=len, reverse=True)
 
 
 PATH_END = r"(?=[\\/\"'\s:;,)\]>]|$)"
@@ -87,7 +95,10 @@ PRINCIPAL = re.compile(r"(:(?:user|assumed-role|federated-user)/)[^\s\\\"',;)]+"
 
 def _user_pattern() -> re.Pattern | None:
     name = Path.home().name
-    return re.compile(r"(Users[\\/]+)" + re.escape(name) + PATH_END, re.IGNORECASE) if name else None
+    if not name:
+        return None
+    names = "|".join(re.escape(v) for v in sorted(set(_escaped(name)), key=len, reverse=True))
+    return re.compile(r"(Users[\\/]+)(?:" + names + ")" + PATH_END, re.IGNORECASE)
 
 
 def sanitize(obj, secrets: list[str]):
@@ -295,7 +306,9 @@ def _valid_record(rec) -> bool:
     cloud = rec.get("cloud")
     if cloud is None:
         return True
-    return isinstance(cloud, dict) and all(isinstance(cloud.get(k), (str, type(None))) for k in ("region", "bucket"))
+    text_fields = ("region", "bucket", "creating_bucket", "function", "role", "permissions_boundary", "bucket_prefix",
+                   "tags_sha256")
+    return isinstance(cloud, dict) and all(isinstance(cloud.get(k), (str, type(None))) for k in text_fields)
 
 
 def read_run_log() -> tuple[list[dict], int]:

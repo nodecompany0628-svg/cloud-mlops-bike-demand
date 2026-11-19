@@ -124,7 +124,8 @@ class Cloud:
         return {"region": self.region, "credentials": "profile" if self.profile else "environment",
                 "caller_type": self.caller_type,
                 "function": self.fn, "role": self.role, "permissions_boundary": self.boundary_name,
-                "bucket_prefix": self.bucket_base, "tags_sha256": tags_sha256(self.tags), "bucket": self.bucket,
+                "bucket_prefix": self.bucket_base, "tags": dict(self.tags), "tags_sha256": tags_sha256(self.tags),
+                "bucket": self.bucket,
                 "log_group": self.log_group}
 
     def role_arn(self) -> str:
@@ -811,7 +812,11 @@ def deploy_history() -> dict:
         summary = r.get("summary") if isinstance(r.get("summary"), dict) else {}
         if r.get("step") == "deploy" and info.get("resources_touched") is True:
             if all(isinstance(n, str) and n for n in names):
-                pending[names] = True
+                entry = pending.setdefault(names, {"regions": set(), "tags": None})
+                if isinstance(info.get("region"), str):
+                    entry["regions"].add(info["region"])
+                if isinstance(info.get("tags"), dict):
+                    entry["tags"] = info["tags"]
             for field in ("bucket", "creating_bucket"):
                 if isinstance(info.get(field), str) and info[field]:
                     buckets.add(info[field])
@@ -823,7 +828,7 @@ def deploy_history() -> dict:
             gone = summary.get("buckets_gone") if isinstance(summary.get("buckets_gone"), list) else []
             buckets -= {b for b in gone if isinstance(b, str)}
             creating -= {b for b in gone if isinstance(b, str)}
-    return {"pending": list(pending), "buckets": buckets, "creating": creating}
+    return {"pending": pending, "buckets": buckets, "creating": creating}
 
 
 def renamed_leftovers(cfg: dict) -> tuple[list[dict], bool]:
@@ -831,7 +836,8 @@ def renamed_leftovers(cfg: dict) -> tuple[list[dict], bool]:
     current = (c["function_name"], c["role_name"], c["permissions_boundary"], c["bucket_prefix"],
                tags_sha256(c.get("tags")))
     pending = deploy_history()["pending"]
-    others = [dict(zip(NAME_KEYS, n, strict=True)) for n in pending if n != current]
+    others = [{**dict(zip(NAME_KEYS, n, strict=True)), "tags": entry["tags"]}
+              for n, entry in pending.items() if n != current]
     return others, current in pending
 
 
@@ -1214,6 +1220,7 @@ def _clouds(ctx) -> tuple[list[Cloud], list[dict]]:
         if region:
             extra.setdefault(region, set()).add(name)
     own = first.bucket_regions() | set(extra)
+    own |= {r for entry in deploy_history()["pending"].values() for r in entry["regions"]}
     own |= {d["region"] for d in deployments() if d["account"] == account_key(first.account)}
     if first.configured_region:
         own.add(first.configured_region)
@@ -1257,7 +1264,7 @@ def step_status(ctx) -> None:
     try:
         resources = _status_all(clouds)
         boundary = clouds[0].boundary_status()
-    except Exception as e:
+    except BaseException as e:
         write_json(ctx.out(f"results/cloud/{name}.json"), {"checked_at": now_iso(), **ctx.cloud,
                                                           "interrupted": f"{type(e).__name__}: {e}"})
         raise
@@ -1337,7 +1344,7 @@ def step_cleanup(ctx) -> None:
     deleted = []
     try:
         report = _cleanup_all(clouds, unreachable, broken, renamed, deleted)
-    except Exception as e:
+    except BaseException as e:
         write_json(ctx.out("results/cloud/cleanup.json"), {"cleaned_at": now_iso(), "interrupted": f"{type(e).__name__}: {e}",
                                                            "actions": deleted, "all_gone": False})
         ctx.summary = {"all_gone": False, "actions": {d["resource"]: d["result"] for d in deleted}}

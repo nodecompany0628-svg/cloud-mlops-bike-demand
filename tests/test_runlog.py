@@ -157,6 +157,8 @@ def test_sanitize_ignores_path_case():
     for text in (raw.lower(), raw.upper(), json.dumps(raw.lower())):
         clean = runlog.sanitize(text, [])
         assert Path.home().name.lower() not in clean.lower()
+        assert clean.startswith(("<REPO>", '"<REPO>')) and "cloud-mlops-bike-demand" not in clean.lower()
+        assert json.dumps(Path.home().name)[1:-1].lower() not in clean.lower()
 
 
 def test_sanitize_hides_short_repo_path(monkeypatch):
@@ -207,10 +209,11 @@ def test_odd_run_log_lines_count_as_unreadable(isolated):
     lines = [good.encode(), b"", b"[]", b"\xff\xfe", json.dumps({**base, "cloud": []}).encode(),
              json.dumps({**base, "cloud": {"region": 5}}).encode(), b'{"run_id": "cut"',
              json.dumps({"cloud": None}).encode(),
-             json.dumps({**base, "run_id": "b", "git": "abc", "error": 5, "model": [], "finished_at": 1}).encode()]
+             json.dumps({**base, "run_id": "b", "git": "abc", "error": 5, "model": [], "finished_at": 1}).encode(),
+             json.dumps({**base, "step": "cleanup", "cloud": {"tags_sha256": ["x"]}}).encode()]
     runlog.RUN_LOG.write_bytes(b"\n".join(lines) + b"\n")
     records, broken = runlog.read_run_log()
-    assert [r["run_id"] for r in records] == ["a", "b"] and broken == 6
+    assert [r["run_id"] for r in records] == ["a", "b"] and broken == 7
     runlog.print_runs()
 
 

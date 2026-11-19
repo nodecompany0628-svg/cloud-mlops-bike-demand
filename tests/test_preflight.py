@@ -70,3 +70,28 @@ def test_library_versions_must_match_lambda_pins():
     assert found == ["numpy 2.5.5, requirements-lambda.txt 2.5.4"]
     assert "라이브러리 버전" in problems(library_mismatch=found)[0]
     assert "라이브러리 버전이 없음" in problems(model_meta={"model_sha256": SHA})[0]
+
+
+def test_deploy_preflight_passes_on_committed_results():
+    import pytest
+
+    from bikeml import cloud, package
+    from bikeml.common import ROOT, load_config, load_json
+
+    if not package.ZIP_PATH.exists():
+        pytest.skip("build/lambda_package.zip 없음 (python -m bikeml run package)")
+    cfg = load_config()
+    pre = cloud.deploy_preflight(cfg, load_json(ROOT / cfg["cloud"]["lambda_config"]))
+    assert pre["zip_sha256"] == load_json(ROOT / "results" / "cloud" / "package.json")["zip_sha256"]
+
+
+def test_deploy_preflight_checks_model_file_hyperparameters(monkeypatch):
+    import pytest
+
+    from bikeml import cloud, data
+    from bikeml.common import ROOT, load_config, load_json
+
+    cfg = load_config()
+    monkeypatch.setattr(data, "estimator_mismatch", lambda model, cfg: ["max_iter"])
+    with pytest.raises(RuntimeError, match="하이퍼파라미터"):
+        cloud.deploy_preflight(cfg, load_json(ROOT / cfg["cloud"]["lambda_config"]))
