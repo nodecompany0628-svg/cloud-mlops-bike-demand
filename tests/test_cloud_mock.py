@@ -372,3 +372,28 @@ def test_profile_name_is_not_recorded(sandbox):
         runlog.run_steps(["status"], STEPS, load_config(), args, DEFAULT_CONFIG)
     text = (sandbox / "runs" / "run_log.jsonl").read_text(encoding="utf-8")
     assert "kim-personal" not in text and "<PROFILE>" in text
+
+
+def test_cleanup_finds_other_region_from_bucket_names_alone(sandbox):
+    with mock_aws():
+        assert run(["deploy"], region="us-west-2") == 0
+        assert run(["deploy"]) == 0
+        cloud.REGIONS_STATE.unlink()
+        runlog.RUN_LOG.unlink()
+        rc = run(["cleanup"])
+        west = boto3.client("lambda", region_name="us-west-2").list_functions()["Functions"]
+        buckets = boto3.client("s3", region_name="us-west-2").list_buckets()["Buckets"]
+    clean = read(sandbox, "results/cloud/cleanup.json")
+    assert rc == 0 and clean["all_gone"] and "us-west-2" in clean["regions_checked"]
+    assert west == [] and buckets == []
+
+
+def test_configured_bucket_in_other_region_is_refused(sandbox):
+    cfg = load_config()
+    name = "bike-demand-mlops-us-west-2-0f0f0f0f"
+    cfg["cloud"]["bucket"] = name
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-west-2")
+        s3.create_bucket(Bucket=name, CreateBucketConfiguration={"LocationConstraint": "us-west-2"})
+        rc = runlog.run_steps(["deploy"], STEPS, cfg, make_args(steps=["deploy"]), DEFAULT_CONFIG)
+    assert rc == 1 and "리전" in records(sandbox)[-1]["error"]

@@ -75,6 +75,7 @@ def test_model_with_wrong_feature_count(monkeypatch, tmp_path):
     p = tmp_path / "model.joblib"
     joblib.dump(LinearRegression().fit(np.eye(3), [1, 2, 3]), p)
     monkeypatch.setenv("MODEL_URI", str(p))
+    monkeypatch.setenv("MODEL_SHA256", hashlib.sha256(p.read_bytes()).hexdigest())
     resp = lf.lambda_handler(GOOD, None)
     assert error_code(resp) == (500, "MODEL_LOAD_FAILED") and "입력 개수" in resp["body"]["error"]["message"]
 
@@ -91,3 +92,9 @@ def test_unexpected_error_during_predict():
 def test_parse_s3_uri_with_version():
     assert lf.parse_s3_uri("s3://b/models/v1/model.joblib?versionId=abc") == ("b", "models/v1/model.joblib", "abc")
     assert lf.parse_s3_uri("s3://b/models/v1/model.joblib") == ("b", "models/v1/model.joblib", None)
+
+
+def test_missing_expected_sha_is_refused(monkeypatch):
+    monkeypatch.setenv("MODEL_URI", str(MODEL))
+    resp = lf.lambda_handler(GOOD, None)
+    assert error_code(resp) == (500, "MODEL_LOAD_FAILED") and "MODEL_SHA256" in resp["body"]["error"]["message"]

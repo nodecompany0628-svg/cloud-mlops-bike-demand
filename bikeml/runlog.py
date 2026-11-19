@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .common import ROOT, rel, sha256_file
+from .common import ROOT, rel, resolve_profile, sha256_file
 
 RUN_LOG = ROOT / "runs" / "run_log.jsonl"
 STAGING = ROOT / "results" / "_staging"
@@ -65,14 +65,15 @@ def _path_variants(path: Path) -> list[str]:
     return [raw.replace("\\", "\\" * 4), raw.replace("\\", "\\" * 2), raw, path.as_posix()]
 
 
-def _redactions(secrets: list[str]) -> list[tuple[str, str]]:
-    pairs = [(s, "<ACCOUNT_ID>") for s in secrets if s]
+def _redactions(secrets: list) -> list[tuple[str, str]]:
+    pairs = [(s, "<ACCOUNT_ID>") for s in secrets if isinstance(s, str) and s]
     pairs += [(v, "<REPO>") for v in _path_variants(ROOT)]
     pairs += [(v, "~") for v in _path_variants(Path.home())]
     return pairs
 
 
 PROFILE_IN_ERROR = re.compile(r"(profile \()[^)]*(\))")
+ARN_ACCOUNT = re.compile(r"(arn:aws[\w-]*:[\w-]*:[\w-]*:)\d{12}")
 PRINCIPAL = re.compile(r"((?:user|assumed-role|federated-user)/)[^\s\\\"',;)]+")
 
 
@@ -85,8 +86,12 @@ def sanitize(obj, secrets: list[str]):
     if isinstance(obj, str):
         for s, repl in _redactions(secrets):
             obj = re.sub(re.escape(s), lambda _m, r=repl: r, obj, flags=re.IGNORECASE)
+        obj = ARN_ACCOUNT.sub(r"\1<ACCOUNT_ID>", obj)
         obj = PRINCIPAL.sub(r"\1<NAME>", obj)
         obj = PROFILE_IN_ERROR.sub(r"\1<PROFILE>\2", obj)
+        for s in secrets:
+            if isinstance(s, tuple) and s[0] == "profile" and s[1]:
+                obj = re.sub(r"(?<![\w-])" + re.escape(s[1]) + r"(?![\w-])", "<PROFILE>", obj)
         pat = _user_pattern()
         return pat.sub(r"\1<USER>", obj) if pat else obj
     if isinstance(obj, dict):
@@ -182,7 +187,10 @@ def run_steps(step_names: list[str], registry: dict, cfg: dict, args, config_pat
     if git["code_dirty"]:
         print("  주의: 커밋하지 않은 코드 변경이 있습니다. 기록의 커밋과 실제 코드가 다를 수 있습니다.")
 
-    secrets: list[str] = []
+    secrets: list = []
+    profile = resolve_profile(cfg, getattr(args, "profile", None))
+    if profile:
+        secrets.append(("profile", profile))
     for i, name in enumerate(step_names):
         stage = STAGING / run_id / name
         stage.mkdir(parents=True, exist_ok=True)

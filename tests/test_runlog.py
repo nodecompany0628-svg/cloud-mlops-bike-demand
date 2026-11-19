@@ -163,3 +163,11 @@ def test_sanitize_hides_short_repo_path(monkeypatch):
     monkeypatch.setattr(runlog, "ROOT", short)
     clean = runlog.sanitize(str(short / "config" / "pipeline.json"), [])
     assert clean.startswith("<REPO>") and "work" not in clean
+
+
+def test_sanitize_hides_account_in_arns_and_profile_names():
+    msg = ('User: arn:aws:iam::111122223333:user/kim is not authorized on arn:aws:iam::444455556666:role/X; '
+           'The profile "mlops" is broken; bucket bike-demand-mlops-ap-northeast-2-1a2b3c4d')
+    clean = runlog.sanitize(msg, [("profile", "mlops")])
+    assert "111122223333" not in clean and "444455556666" not in clean
+    assert 'profile "<PROFILE>"' in clean and "bike-demand-mlops-ap-northeast-2-1a2b3c4d" in clean

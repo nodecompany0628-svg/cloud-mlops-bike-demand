@@ -70,7 +70,9 @@ def _load_model():
     except Exception as e:
         raise ModelLoadError(f"모델 파일을 가져오지 못했습니다 ({uri}): {type(e).__name__}: {e}") from e
     expected = os.environ.get("MODEL_SHA256")
-    if expected and sha != expected:
+    if not expected:
+        raise ModelLoadError("환경 변수 MODEL_SHA256 이 없습니다")
+    if sha != expected:
         raise ModelLoadError(f"모델 sha256 불일치: 기대 {expected[:12]}..., 실제 {sha[:12]}...")
     try:
         import joblib

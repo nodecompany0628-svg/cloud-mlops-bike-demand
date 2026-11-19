@@ -86,11 +86,19 @@ class Cloud:
         self.iam = self.session.client("iam")
         self.lam = self.session.client("lambda")
         self.logs = self.session.client("logs")
-        configured = c.get("bucket")
-        if configured and not configured.startswith(f"{c['bucket_prefix']}-"):
-            raise RuntimeError(f"cloud.bucket 은 {c['bucket_prefix']}- 로 시작해야 합니다: {configured}")
-        self.buckets = [configured] if configured else self.find_buckets()
-        self.bucket = self.buckets[0] if len(self.buckets) == 1 else None
+        self.bucket_base = c["bucket_prefix"]
+        self.configured = c.get("bucket")
+        if self.configured and not self.configured.startswith(f"{self.bucket_base}-"):
+            raise RuntimeError(f"cloud.bucket 은 {self.bucket_base}- 로 시작해야 합니다: {self.configured}")
+        self.configured_region = self.bucket_region(self.configured) if self.configured else None
+        found = self.find_buckets()
+        if self.configured and self.configured_region == self.region:
+            found = sorted(set(found) | {self.configured})
+        self.buckets = found
+        if self.configured:
+            self.bucket = self.configured if self.configured_region in (None, self.region) else None
+        else:
+            self.bucket = found[0] if len(found) == 1 else None
 
     def info(self) -> dict:
         return {"region": self.region, "credentials": "profile" if self.profile else "environment",
@@ -106,11 +114,29 @@ class Cloud:
     def ours(self, tags: dict) -> bool:
         return all(tags.get(k) == v for k, v in self.tags.items())
 
-    def find_buckets(self) -> list[str]:
+    def all_bucket_names(self) -> list[str]:
         names = []
         for page in self.s3.get_paginator("list_buckets").paginate():
-            names += [b["Name"] for b in page.get("Buckets", []) if b["Name"].startswith(self.bucket_prefix)]
-        return sorted(names)
+            names += [b["Name"] for b in page.get("Buckets", [])]
+        return names
+
+    def find_buckets(self) -> list[str]:
+        return sorted(n for n in self.all_bucket_names() if n.startswith(self.bucket_prefix))
+
+    def bucket_regions(self) -> set[str]:
+        pattern = re.compile(re.escape(self.bucket_base) + r"-([a-z]{2}(?:-[a-z]+)+-\d+)-[0-9a-f]{8}")
+        return {m.group(1) for n in self.all_bucket_names() if (m := pattern.fullmatch(n))}
+
+    def bucket_region(self, name: str) -> str | None:
+        from botocore.exceptions import ClientError
+
+        try:
+            loc = self.s3.get_bucket_location(Bucket=name).get("LocationConstraint")
+        except ClientError as e:
+            if _code(e) in NOT_FOUND:
+                return None
+            raise
+        return loc or "us-east-1"
 
     def bucket_tags(self) -> dict:
         from botocore.exceptions import ClientError
@@ -149,10 +175,13 @@ class Cloud:
             "TagSet": [{"Key": k, "Value": v} for k, v in self.tags.items()]})
 
     def ensure_bucket(self) -> str:
-        if len(self.buckets) > 1:
+        if self.configured and self.configured_region not in (None, self.region):
+            raise RuntimeError(f"cloud.bucket {self.configured} 의 리전({self.configured_region})이 "
+                               f"지금 리전({self.region})과 다릅니다")
+        if not self.configured and len(self.buckets) > 1:
             raise RuntimeError(f"버킷이 여러 개입니다 {self.buckets}. cleanup 으로 정리하거나 "
                                "config/pipeline.json 의 cloud.bucket 에 하나를 적으세요")
-        if self.bucket:
+        if self.bucket and (not self.configured or self.configured_region == self.region):
             self.s3.head_bucket(Bucket=self.bucket)
             tags = self.bucket_tags()
             created = "exists"
@@ -162,7 +191,7 @@ class Cloud:
                 self.tag_bucket()
                 created = "adopted"
         else:
-            self.bucket = self.bucket_prefix + pysecrets.token_hex(4)
+            self.bucket = self.configured or self.bucket_prefix + pysecrets.token_hex(4)
             kwargs = {} if self.region == "us-east-1" else {
                 "CreateBucketConfiguration": {"LocationConstraint": self.region}}
             self.s3.create_bucket(Bucket=self.bucket, **kwargs)
@@ -556,8 +585,21 @@ def other_account_regions(account: str) -> list[str]:
     return sorted({d["region"] for d in deployments() if d["account"] != account_key(account)})
 
 
+def run_log_regions() -> set[str]:
+    from . import runlog
+
+    if not runlog.RUN_LOG.exists():
+        return set()
+    regions = set()
+    for line in runlog.RUN_LOG.read_text(encoding="utf-8").splitlines():
+        region = ((json.loads(line).get("cloud") or {}).get("region"))
+        if region:
+            regions.add(region)
+    return regions
+
+
 def known_regions(cfg: dict, args, account: str) -> list[str]:
-    regions = {resolve_region(cfg, getattr(args, "region", None))}
+    regions = {resolve_region(cfg, getattr(args, "region", None))} | run_log_regions()
     regions |= {d["region"] for d in deployments() if d["account"] == account_key(account)}
     for name in ("deploy.json", "deploy_override.json"):
         path = RESULTS / "cloud" / name
@@ -818,7 +860,10 @@ def step_release(ctx) -> None:
 
 def _clouds(ctx) -> list[Cloud]:
     first = Cloud(ctx.cfg, ctx.args, ctx)
-    others = [r for r in known_regions(ctx.cfg, ctx.args, first.account) if r != first.region]
+    regions = set(known_regions(ctx.cfg, ctx.args, first.account)) | first.bucket_regions()
+    if first.configured_region:
+        regions.add(first.configured_region)
+    others = sorted(r for r in regions if r != first.region)
     return [first] + [Cloud(ctx.cfg, ctx.args, ctx, region=r) for r in others]
 
 
