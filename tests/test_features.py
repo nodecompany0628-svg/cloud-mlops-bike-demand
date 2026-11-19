@@ -10,17 +10,17 @@ GOOD = {"datetime": "2012-10-01T08:00", "holiday": False, "weather": 1, "temp_c"
 
 def feat(rec):
     row, warnings = to_features(rec)
-    return dict(zip(FEATURES, row)), warnings
+    return dict(zip(FEATURES, row, strict=True)), warnings
 
 
 def test_calendar_values_follow_dataset_convention():
-    f, w = feat(GOOD)  # 2012-10-01 은 월요일
+    f, w = feat(GOOD)
     assert (f["yr"], f["mnth"], f["hr"], f["weekday"], f["workingday"], f["holiday"]) == (1, 10, 8, 1, 1, 0)
     assert w == []
 
 
 def test_saturday_and_holiday():
-    f, _ = feat({**GOOD, "datetime": "2011-01-01T00:00"})  # 토요일 = 6 (원자료와 같음)
+    f, _ = feat({**GOOD, "datetime": "2011-01-01T00:00"})
     assert f["weekday"] == 6 and f["workingday"] == 0
     f, _ = feat({**GOOD, "holiday": True})
     assert f["holiday"] == 1 and f["workingday"] == 0
@@ -34,6 +34,11 @@ def test_year_outside_training_is_clipped_with_warning():
 @pytest.mark.parametrize("field,value", [
     ("datetime", "2012-10-01T25:00"),
     ("datetime", 20121001),
+    ("datetime", "2012-10-01"),
+    ("datetime", "20121001"),
+    ("datetime", "2012-W40-1"),
+    ("temp_c", 10 ** 400),
+    ("temp_c", None),
     ("weather", 5),
     ("weather", True),
     ("temp_c", "17.5"),
@@ -46,6 +51,18 @@ def test_invalid_values_are_rejected(field, value):
     with pytest.raises(FieldError) as e:
         to_features({**GOOD, field: value})
     assert e.value.field == field
+
+
+def test_space_separator_and_timezone_warning():
+    f, w = feat({**GOOD, "datetime": "2012-10-01 08:00"})
+    assert f["hr"] == 8 and w == []
+    f, w = feat({**GOOD, "datetime": "2012-10-01T08:00+09:00"})
+    assert f["hr"] == 8 and any("시간대" in m for m in w)
+
+
+def test_minutes_are_dropped_with_warning():
+    f, w = feat({**GOOD, "datetime": "2012-10-01T08:45"})
+    assert f["hr"] == 8 and any("분·초" in m for m in w)
 
 
 def test_missing_field():

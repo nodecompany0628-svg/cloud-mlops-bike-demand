@@ -1,10 +1,3 @@
-"""Lambda 배포 패키지(zip) 만들기.
-
-Windows 에서 만들어도 Lambda(리눅스 x86_64, Python 3.12)에서 돌도록
-pip 에 --platform manylinux, --only-binary 를 주어 리눅스용 휠을 받는다.
-zip 안의 파일 순서와 시각을 고정해서 같은 입력이면 같은 sha256 이 나온다.
-"""
-
 from __future__ import annotations
 
 import shutil
@@ -18,6 +11,7 @@ from .common import ROOT, load_json, rel, sha256_file, write_json
 BUILD = ROOT / "build"
 PKG_DIR = BUILD / "lambda_pkg"
 ZIP_PATH = BUILD / "lambda_package.zip"
+REQUIREMENTS = ROOT / "requirements-lambda.txt"
 APP_FILES = {
     "lambda_function.py": ROOT / "lambda_src" / "lambda_function.py",
     "bikeml/__init__.py": ROOT / "bikeml" / "__init__.py",
@@ -25,7 +19,7 @@ APP_FILES = {
     "bikeml/service.py": ROOT / "bikeml" / "service.py",
 }
 PLATFORMS = ["manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64"]
-UNZIPPED_LIMIT = 250 * 1024 * 1024  # Lambda: 압축 해제 후 250MB 이하
+UNZIPPED_LIMIT = 250 * 1024 * 1024
 FIXED_TIME = (2020, 1, 1, 0, 0, 0)
 
 
@@ -34,25 +28,22 @@ def _dir_size(p: Path) -> int:
 
 
 def build_package(lambda_cfg: dict) -> dict:
-    py = lambda_cfg["runtime"].replace("python", "")  # "3.12"
+    py = lambda_cfg["runtime"].replace("python", "")
     if PKG_DIR.exists():
         shutil.rmtree(PKG_DIR)
     PKG_DIR.mkdir(parents=True)
     cmd = [sys.executable, "-m", "pip", "install", "--quiet", "--no-compile",
            "--target", str(PKG_DIR), "--implementation", "cp", "--python-version", py,
-           "--only-binary=:all:", "-r", str(ROOT / "requirements-lambda.txt")]
+           "--only-binary=:all:", "-r", str(REQUIREMENTS)]
     for plat in PLATFORMS:
         cmd += ["--platform", plat]
     subprocess.run(cmd, check=True)
 
-    # 실행에 쓰지 않는 테스트 폴더와 캐시는 뺀다(크기 줄이기).
-    # bin/ 에는 pip 가 만든 Windows 실행 파일(f2py.exe 등)이 들어가는데,
-    # Lambda 에서 쓸 수 없고 빌드할 때마다 내용이 달라져 zip 해시가 바뀌므로 뺀다.
     removed = _dir_size(PKG_DIR / "bin") if (PKG_DIR / "bin").exists() else 0
     shutil.rmtree(PKG_DIR / "bin", ignore_errors=True)
-    for record in PKG_DIR.glob("*.dist-info/RECORD"):  # 지운 bin/ 파일의 해시 줄도 뺀다
+    for record in PKG_DIR.glob("*.dist-info/RECORD"):
         lines = record.read_text(encoding="utf-8").splitlines(keepends=True)
-        record.write_text("".join(l for l in lines if not l.startswith("../../bin/")), encoding="utf-8", newline="")
+        record.write_text("".join(x for x in lines if not x.startswith("../../bin/")), encoding="utf-8", newline="")
     for d in sorted(PKG_DIR.rglob("*"), reverse=True):
         if d.is_dir() and d.name in ("tests", "__pycache__"):
             removed += _dir_size(d)
@@ -65,7 +56,7 @@ def build_package(lambda_cfg: dict) -> dict:
 
     unzipped = _dir_size(PKG_DIR)
     if unzipped > UNZIPPED_LIMIT:
-        raise RuntimeError(f"압축 해제 크기 {unzipped/1e6:.1f}MB 가 Lambda 한도 250MB 를 넘습니다")
+        raise RuntimeError(f"압축 해제 크기 {unzipped / 1e6:.1f}MB 가 Lambda 한도 250MB 를 넘습니다")
 
     files = sorted(p for p in PKG_DIR.rglob("*") if p.is_file())
     if ZIP_PATH.exists():
@@ -89,13 +80,14 @@ def build_package(lambda_cfg: dict) -> dict:
         "platforms": PLATFORMS,
         "installed": installed,
         "app_files": {arc: sha256_file(src) for arc, src in APP_FILES.items()},
+        "requirements_sha256": sha256_file(REQUIREMENTS),
     }
 
 
 def step_package(ctx) -> None:
     lcfg_path = ROOT / (ctx.args.lambda_config or ctx.cfg["cloud"]["lambda_config"])
     ctx.add_config(lcfg_path)
-    ctx.add_input(ROOT / "requirements-lambda.txt")
+    ctx.add_input(REQUIREMENTS)
     info = build_package(load_json(lcfg_path))
     write_json(ctx.out("results/cloud/package.json"), info)
     ctx.state["package"] = info

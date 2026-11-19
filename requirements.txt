@@ -1,4 +1,3 @@
-# 로컬 학습, 평가, 배포 도구 (Python 3.12)
 numpy==2.5.5
 scipy==1.18.1
 scikit-learn==1.9.1
@@ -9,3 +8,4 @@ narwhals==2.29.0
 pandas==3.1.1
 boto3==1.44.6
 pytest==9.2.0
+moto[s3,iam,awslambda,logs,sts]==5.2.5

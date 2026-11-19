@@ -1,13 +1,7 @@
-"""데이터 받기(fetch)와 정리·분할(prepare).
-
-원자료: UCI Bike Sharing Dataset, hour.csv (Capital Bikeshare, 워싱턴 D.C., 2011~2012)
-한 행 = 한 시간 동안의 전체 대여 건수(cnt)와 그 시간의 날씨·달력 정보.
-"""
-
 from __future__ import annotations
 
+import hashlib
 import io
-import json
 import math
 import urllib.request
 import zipfile
@@ -17,22 +11,15 @@ import pandas as pd
 from .common import ROOT, sha256_file, write_json
 from .features import FEATURES, to_features
 
-# 원자료의 정규화 값을 실제 단위로 되돌리는 식.
-# 같은 데이터셋의 Readme.txt 는 "41로 나눔"이라고 하고, UCI 웹페이지는
-# (t - t_min)/(t_max - t_min), t_min=-8, t_max=39 (체감 -16, 50) 라고 한다.
-# 가장 추운 시각(2011-01-22 04시, 정규화 0.02)이 Readme 식으로는 +0.8°C,
-# 웹페이지 식으로는 -7.1°C 가 된다. 그날 워싱턴은 영하였으므로 웹페이지 식을 쓴다.
 TEMP_MIN, TEMP_MAX = -8.0, 39.0
 ATEMP_MIN, ATEMP_MAX = -16.0, 50.0
 HUM_SCALE = 100.0
-WIND_SCALE = 67.0  # Readme: 최댓값 67로 나눔. 단위 표기는 없음(km/h 로 가정).
+WIND_SCALE = 67.0
 
 REQUEST_COLUMNS = ["datetime", "holiday", "weather", "temp_c", "feels_like_c", "humidity", "windspeed_kmh"]
 TARGET = "cnt"
 EXPECTED_ROWS = 17379
 
-
-# ---------------------------------------------------------------- fetch
 
 def step_fetch(ctx) -> None:
     dcfg = ctx.cfg["data"]
@@ -47,13 +34,11 @@ def step_fetch(ctx) -> None:
         print(f"  원자료 내려받기: {dcfg['url']}")
         with urllib.request.urlopen(dcfg["url"], timeout=60) as r:
             blob = r.read()
-        import hashlib
-
         got = hashlib.sha256(blob).hexdigest()
         if got != dcfg["zip_sha256"]:
             raise RuntimeError(f"zip sha256 불일치: 기대 {dcfg['zip_sha256'][:12]}…, 실제 {got[:12]}…")
         with zipfile.ZipFile(io.BytesIO(blob)) as z:
-            for name in expected:  # 필요한 파일만 이름으로 꺼낸다
+            for name in expected:
                 ctx.out(f"{dcfg['raw_dir']}/{name}").write_bytes(z.read(name))
         for name, h in expected.items():
             got = sha256_file(ctx.stage / dcfg["raw_dir"] / name)
@@ -66,14 +51,11 @@ def step_fetch(ctx) -> None:
         ctx.inputs.append({"path": f"{dcfg['raw_dir']}/{name}", "sha256": sha256_file(p)})
 
 
-# ---------------------------------------------------------------- prepare
-
 def load_raw(cfg) -> pd.DataFrame:
     return pd.read_csv(ROOT / cfg["data"]["raw_dir"] / "hour.csv")
 
 
 def quality_checks(df: pd.DataFrame) -> dict:
-    """원자료 점검. 통과하지 못하면 예외를 내서 파이프라인을 멈춘다."""
     problems = []
     if len(df) != EXPECTED_ROWS:
         problems.append(f"행 수 {len(df)} != {EXPECTED_ROWS}")
@@ -107,7 +89,6 @@ def quality_checks(df: pd.DataFrame) -> dict:
 
 
 def to_requests(df: pd.DataFrame) -> pd.DataFrame:
-    """원자료 -> 서비스 요청과 같은 모양(실제 단위) + 정답(cnt)."""
     out = pd.DataFrame({
         "datetime": df.dteday + "T" + df.hr.astype(int).map("{:02d}:00".format),
         "holiday": df.holiday.astype(bool),
@@ -117,7 +98,6 @@ def to_requests(df: pd.DataFrame) -> pd.DataFrame:
         "humidity": (df.hum * HUM_SCALE).round(1),
         "windspeed_kmh": (df.windspeed * WIND_SCALE).round(2),
     })
-    # 습도 0% 는 2011-03-10 하루에 몰린 센서 오류(비 오는 날 0% 는 불가능) -> 결측으로 둔다.
     out.loc[out.humidity == 0, "humidity"] = math.nan
     out[TARGET] = df.cnt.astype(int)
     return out
@@ -132,12 +112,10 @@ def records(df: pd.DataFrame) -> list[dict]:
 
 
 def feature_matrix(df: pd.DataFrame, allow_missing_humidity: bool = True) -> list[list[float]]:
-    """서비스와 같은 to_features 로 특성을 만든다."""
     return [to_features(r, allow_missing_humidity=allow_missing_humidity)[0] for r in records(df)]
 
 
 def check_derived(raw: pd.DataFrame, X: list[list[float]]) -> dict:
-    """서비스가 날짜로부터 계산한 달력 값이 원자료 값과 같은지 확인."""
     fx = pd.DataFrame(X, columns=FEATURES)
     pairs = {"yr": "yr", "mnth": "mnth", "hr": "hr", "weekday": "weekday",
              "workingday": "workingday", "holiday": "holiday", "weathersit": "weathersit"}
@@ -179,14 +157,13 @@ def step_prepare(ctx) -> None:
 
     df = to_requests(raw)
     X = feature_matrix(df)
-    check_derived(raw, X)
+    mismatches = check_derived(raw, X)
 
     train, test = split(df, cfg)
     pdir = cfg["data"]["processed_dir"]
     train.to_csv(ctx.out(f"{pdir}/train.csv"), index=False, lineterminator="\n")
     test.to_csv(ctx.out(f"{pdir}/test.csv"), index=False, lineterminator="\n")
 
-    # 예시 요청: 평가 기간의 하루(24시간). 실제 관측 날씨를 '완벽한 예보'로 넣는다.
     day = cfg["evaluation"]["sample_day"]
     day_df = test[test.datetime.str.startswith(day)]
     write_json(ctx.out(f"samples/generated/request_{day}.json"), {"instances": records(day_df)})
@@ -213,7 +190,7 @@ def step_prepare(ctx) -> None:
             "season": "월(mnth)로 대신함, 원자료 정의(1=봄)가 실제 달력과 어긋남",
             "dteday, yr, mnth, weekday, workingday": "요청의 datetime, holiday 로 다시 계산(원자료 값과 일치 확인)",
         },
-        "derived_feature_mismatches": 0,
+        "derived_feature_mismatches": mismatches,
         "split": {"rule": cfg["split"], "train": _part_summary(train), "test": _part_summary(test)},
     }
     write_json(ctx.out("results/data/prepare_report.json"), report)

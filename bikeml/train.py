@@ -1,9 +1,3 @@
-"""모델 학습: HistGradientBoostingRegressor(포아송 손실).
-
-대여 건수는 0 이상의 셈 값이라 포아송 손실을 쓴다(예측도 항상 0 이상).
-하이퍼파라미터는 config/pipeline.json 에 고정해 두고, 평가 자료로 고르지 않았다.
-"""
-
 from __future__ import annotations
 
 import time

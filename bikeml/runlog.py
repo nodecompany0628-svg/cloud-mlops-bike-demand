@@ -1,25 +1,16 @@
-"""실행 기록과 단계 실행기.
-
-단계마다 runs/run_log.jsonl 에 한 줄씩 남긴다:
-시각, 성공 여부, Git 커밋, 모델 버전, 입력과 설정의 해시, 결과 위치, 오류.
-
-각 단계는 결과를 results/_staging/<run_id>/<step>/ 에 먼저 쓴다.
-성공하면 저장소의 제자리(results/, models/ ...)로 옮기고,
-실패하면 results/failed/<run_id>_<step>/ 로 옮겨 정상 결과와 섞이지 않게 한다.
-실패한 단계 뒤의 단계는 실행하지 않고 skipped 로 기록한다.
-"""
-
 from __future__ import annotations
 
 import json
+import os
 import platform
+import re
 import shutil
 import subprocess
 import time
 import traceback
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .common import ROOT, rel, sha256_file
@@ -32,7 +23,7 @@ CODE_PATHS = ["bikeml", "lambda_src", "config", "requirements.txt", "requirement
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    return datetime.now(UTC).astimezone().isoformat(timespec="seconds")
 
 
 def new_run_id() -> str:
@@ -53,7 +44,6 @@ def git_info() -> dict:
     return {
         "commit": commit,
         "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
-        # 코드·설정에 커밋하지 않은 변경이 있으면 true (결과 파일 변경은 보지 않음)
         "code_dirty": bool(dirty) if dirty is not None else None,
     }
 
@@ -68,24 +58,33 @@ def env_info() -> dict:
     return {"python": platform.python_version(), "platform": platform.platform(), "libs": versions}
 
 
+def _path_variants(path: Path) -> list[str]:
+    raw = str(path)
+    return [raw.replace("\\", "\\" * 4), raw.replace("\\", "\\" * 2), raw, path.as_posix()]
+
+
 def _redactions(secrets: list[str]) -> list[tuple[str, str]]:
     pairs = [(s, "<ACCOUNT_ID>") for s in secrets if s]
-    # 공개 기록에 PC 사용자 폴더 이름이 남지 않게 경로를 줄인다(저장소 경로를 먼저).
-    pairs += [(str(ROOT), "<REPO>"), (ROOT.as_posix(), "<REPO>"),
-              (str(Path.home()), "~"), (Path.home().as_posix(), "~")]
+    pairs += [(v, "<REPO>") for v in _path_variants(ROOT)]
+    pairs += [(v, "~") for v in _path_variants(Path.home())]
     return pairs
 
 
+def _user_pattern() -> re.Pattern | None:
+    name = Path.home().name
+    return re.compile(r"(Users[\\/]+)" + re.escape(name)) if name else None
+
+
 def sanitize(obj, secrets: list[str]):
-    """기록에 계정 ID, 로컬 경로 같은 값이 들어가지 않게 바꾼다."""
     if isinstance(obj, str):
         for s, repl in _redactions(secrets):
             obj = obj.replace(s, repl)
-        return obj
+        pat = _user_pattern()
+        return pat.sub(r"\1<USER>", obj) if pat else obj
     if isinstance(obj, dict):
         return {k: sanitize(v, secrets) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [sanitize(v, secrets) for v in obj]
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(sanitize(v, secrets) for v in obj)
     return obj
 
 
@@ -102,8 +101,8 @@ class StepContext:
     model: dict | None = None
     cloud: dict | None = None
     summary: dict = field(default_factory=dict)
-    secrets: list = field(default_factory=list)  # 기록에서 가릴 값(계정 ID)
-    state: dict = field(default_factory=dict)    # 같은 실행의 단계끼리 넘기는 값
+    secrets: list = field(default_factory=list)
+    state: dict = field(default_factory=dict)
 
     def add_input(self, path) -> None:
         self.inputs.append({"path": rel(path), "sha256": sha256_file(path)})
@@ -112,7 +111,6 @@ class StepContext:
         self.configs.append({"path": rel(path), "sha256": sha256_file(path)})
 
     def out(self, relpath: str) -> Path:
-        """결과 파일 경로(스테이징 안). 성공하면 저장소의 relpath 로 옮겨진다."""
         p = self.stage / relpath
         p.parent.mkdir(parents=True, exist_ok=True)
         if relpath not in self.outputs:
@@ -123,22 +121,42 @@ class StepContext:
 TEXT_SUFFIXES = {".json", ".jsonl", ".txt", ".csv", ".md"}
 
 
-def _scrub(stage: Path, secrets: list[str]) -> None:
-    """결과 파일을 제자리로 옮기기 전에 계정 ID, 로컬 경로를 가린다."""
-    for f in stage.rglob("*"):
+def _scrub(stage: Path, secrets: list[str]) -> list[str]:
+    unreadable = []
+    for f in sorted(stage.rglob("*")):
         if f.is_file() and f.suffix in TEXT_SUFFIXES:
-            text = f.read_text(encoding="utf-8")
+            try:
+                text = f.read_bytes().decode("utf-8")
+            except UnicodeDecodeError:
+                unreadable.append(f.relative_to(stage).as_posix())
+                continue
             clean = sanitize(text, secrets)
             if clean != text:
-                f.write_text(clean, encoding="utf-8", newline="\n")
+                f.write_bytes(clean.encode("utf-8"))
+    return unreadable
 
 
 def _promote(stage: Path) -> None:
-    for src in sorted(stage.rglob("*")):
-        if src.is_file():
-            dst = ROOT / src.relative_to(stage)
+    moves = [(src, ROOT / src.relative_to(stage)) for src in sorted(stage.rglob("*")) if src.is_file()]
+    done = []
+    try:
+        for src, dst in moves:
             dst.parent.mkdir(parents=True, exist_ok=True)
+            backup = dst.with_name(dst.name + ".promote-bak") if dst.exists() else None
+            if backup:
+                os.replace(dst, backup)
+            done.append((dst, backup))
             shutil.copy2(src, dst)
+    except Exception:
+        for dst, backup in reversed(done):
+            if dst.exists():
+                dst.unlink()
+            if backup:
+                os.replace(backup, dst)
+        raise
+    for _, backup in done:
+        if backup and backup.exists():
+            backup.unlink()
 
 
 def append_record(record: dict) -> None:
@@ -168,15 +186,18 @@ def run_steps(step_names: list[str], registry: dict, cfg: dict, args, config_pat
         error = None
         try:
             registry[name](ctx)
-            _scrub(stage, secrets)
+            unreadable = _scrub(stage, secrets)
+            if unreadable:
+                raise RuntimeError(f"UTF-8 이 아닌 결과 파일이 있어 기록을 가리지 못했습니다: {unreadable}")
             _promote(stage)
             status = "success"
             result_location = ctx.outputs
-        except Exception as e:  # 단계 실패: 기록하고 다음 단계는 멈춘다
+        except Exception as e:
             status = "failed"
             error = f"{type(e).__name__}: {e}"
             (stage / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
-            _scrub(stage, secrets)
+            for bad in _scrub(stage, secrets):
+                (stage / bad).unlink()
             dest = FAILED / f"{run_id}_{name}"
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(stage), str(dest))
@@ -231,11 +252,10 @@ def print_runs(limit: int = 30) -> None:
     if not RUN_LOG.exists():
         print("실행 기록이 없습니다")
         return
-    rows = [json.loads(l) for l in RUN_LOG.read_text(encoding="utf-8").splitlines() if l.strip()]
+    rows = [json.loads(line) for line in RUN_LOG.read_text(encoding="utf-8").splitlines() if line.strip()]
     print(f"{'run_id':24} {'step':12} {'status':8} {'commit':8} {'model':8} {'finished_at':26} error")
     for r in rows[-limit:]:
         commit = ((r.get("git") or {}).get("commit") or "")[:7]
         model = (r.get("model") or {}).get("version") or ""
         err = (r.get("error") or "")[:60]
         print(f"{r['run_id']:24} {r['step']:12} {r['status']:8} {commit:8} {model:8} {r.get('finished_at') or '':26} {err}")
-

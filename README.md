@@ -63,7 +63,7 @@ python -m bikeml status / cleanup   자원 상태 조회 / 삭제 후 재조회
 | 모델 MAE (평가 2012-09~12, 2,888시간) | **47.53 대/시간** (RMSE 72.95) | [results/evaluation/metrics.json](results/evaluation/metrics.json) |
 | 시간대 평균 기준 / 전체 평균 기준 MAE | 94.78 / 170.51 대/시간 → 기준보다 49.9% 감소, 합격 | 같은 파일 |
 | 서비스 검사 (로컬 핸들러) | 13/13 통과 | [results/service_check/local.json](results/service_check/local.json) |
-| 단위 테스트 | 23개 통과 | `python -m pytest -q` |
+| 테스트 | 32개 통과 (모의 AWS로 배포·검사·평가·정리 전 과정 포함) | `python -m pytest -q` |
 | Lambda 패키지 | zip 53.14MB, 압축 해제 169.15MB (한도 250MB), 두 번 빌드해 sha256 같음 | [results/cloud/package.json](results/cloud/package.json) |
 | 클라우드 실행·평가 | ⏳ 실행 전 | [docs/cloud.md](docs/cloud.md) |
 

@@ -1,5 +1,3 @@
-"""경로, 설정, 해시 같은 공통 도구."""
-
 from __future__ import annotations
 
 import hashlib
@@ -37,7 +35,6 @@ def sha256_file(path) -> str:
 
 
 def rel(path) -> str:
-    """저장소 기준 상대 경로(슬래시)."""
     p = Path(path).resolve()
     try:
         return p.relative_to(ROOT).as_posix()

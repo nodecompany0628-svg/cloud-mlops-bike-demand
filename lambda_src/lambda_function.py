@@ -1,22 +1,13 @@
-"""AWS Lambda 진입점.
-
-환경 변수
-  MODEL_URI      s3://버킷/models/<버전>/model.joblib (로컬 검사에서는 파일 경로)
-  MODEL_VERSION  모델 버전 이름 (예: hgb-v1)
-  MODEL_SHA256   모델 파일 sha256. 받은 파일과 다르면 예측하지 않는다.
-
-모델은 실행 환경마다 한 번 내려받아 메모리에 둔다(콜드 스타트 때만 S3 접근).
-불러오기에 실패하면 500 을 돌려주고, 다음 요청에서 다시 시도한다.
-"""
-
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import platform
 import time
 
 from bikeml import service
+from bikeml.features import FEATURES
 
 _CACHE: dict = {}
 
@@ -36,12 +27,26 @@ def _sha256(path: str) -> str:
 def _download(uri: str) -> str:
     if not uri.startswith("s3://"):
         return uri
-    import boto3  # Lambda 런타임에 들어 있음
+    import boto3
 
     bucket, _, key = uri[len("s3://"):].partition("/")
     local = "/tmp/model.joblib"
     boto3.client("s3").download_file(bucket, key, local)
     return local
+
+
+def _runtime() -> dict:
+    import boto3
+    import numpy
+    import sklearn
+
+    return {
+        "python": platform.python_version(),
+        "scikit-learn": sklearn.__version__,
+        "numpy": numpy.__version__,
+        "boto3": boto3.__version__,
+        "execution_env": os.environ.get("AWS_EXECUTION_ENV", "local"),
+    }
 
 
 def _load_model():
@@ -53,24 +58,35 @@ def _load_model():
     t0 = time.perf_counter()
     try:
         path = _download(uri)
-    except Exception as e:  # S3 권한, 경로, 연결 오류
+        sha = _sha256(path)
+    except Exception as e:
         raise ModelLoadError(f"모델 파일을 가져오지 못했습니다 ({uri}): {type(e).__name__}: {e}") from e
-    sha = _sha256(path)
     expected = os.environ.get("MODEL_SHA256")
     if expected and sha != expected:
         raise ModelLoadError(f"모델 sha256 불일치: 기대 {expected[:12]}…, 실제 {sha[:12]}…")
-    import joblib
+    try:
+        import joblib
 
-    model = joblib.load(path)
-    info = {"version": os.environ.get("MODEL_VERSION"), "sha256": sha, "uri": uri}
+        model = joblib.load(path)
+    except Exception as e:
+        raise ModelLoadError(f"모델 파일을 읽지 못했습니다: {type(e).__name__}: {e}") from e
+    n_features = getattr(model, "n_features_in_", None)
+    if n_features != len(FEATURES):
+        raise ModelLoadError(f"모델 입력 개수 {n_features} 가 서비스 입력 개수 {len(FEATURES)} 와 다릅니다")
+    info = {"version": os.environ.get("MODEL_VERSION"), "sha256": sha, "runtime": _runtime()}
     _CACHE["model"], _CACHE["info"] = model, info
     _log({"event": "model_loaded", "model_version": info["version"], "sha256": sha,
-          "load_ms": round((time.perf_counter() - t0) * 1000, 1)})
+          "runtime": info["runtime"], "load_ms": round((time.perf_counter() - t0) * 1000, 1)})
     return model, info
 
 
 def _log(obj: dict) -> None:
     print(json.dumps(obj, ensure_ascii=False))
+
+
+def _fail(request_id: str, code: str, message: str) -> dict:
+    _log({"event": "error", "request_id": request_id, "code": code, "message": message})
+    return {"statusCode": 500, "body": {"ok": False, "error": {"code": code, "message": message}}}
 
 
 def lambda_handler(event, context):
@@ -79,10 +95,11 @@ def lambda_handler(event, context):
     try:
         model, info = _load_model()
     except ModelLoadError as e:
-        _log({"event": "error", "request_id": request_id, "code": "MODEL_LOAD_FAILED", "message": str(e)})
-        return {"statusCode": 500, "body": {"ok": False, "error": {"code": "MODEL_LOAD_FAILED", "message": str(e)}}}
-
-    resp = service.handle(event, model, info)
+        return _fail(request_id, "MODEL_LOAD_FAILED", str(e))
+    try:
+        resp = service.handle(event, model, info)
+    except Exception as e:
+        return _fail(request_id, "INTERNAL_ERROR", f"{type(e).__name__}: {e}")
     body = resp["body"]
     _log({
         "event": "request",

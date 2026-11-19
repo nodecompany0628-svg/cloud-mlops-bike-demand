@@ -1,14 +1,3 @@
-"""명령줄 진입점.
-
-  python -m bikeml run local            # fetch prepare train evaluate check-local
-  python -m bikeml run cloud            # package deploy smoke cloud-eval
-  python -m bikeml run all              # local + cloud
-  python -m bikeml run deploy smoke     # 원하는 단계만 순서대로
-  python -m bikeml status               # AWS 자원 상태 조회
-  python -m bikeml cleanup              # AWS 자원 삭제 후 다시 조회
-  python -m bikeml runs                 # 실행 기록 보기
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -51,7 +40,7 @@ def expand(names: list[str]) -> list[str]:
 
 
 def main(argv=None) -> int:
-    for stream in (sys.stdout, sys.stderr):  # Windows 콘솔에서 한글 출력
+    for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8")
         except (AttributeError, ValueError):

@@ -1,38 +1,40 @@
-"""AWS 자원 준비, 배포, 호출, 상태 조회, 정리 (boto3).
-
-만드는 자원 (모두 config/pipeline.json 의 이름과 태그를 쓴다)
-  S3 버킷      bike-demand-mlops-<계정 해시 10자리>  모델 파일, 배포 패키지 (비공개, 버전 관리)
-  IAM 역할     bike-demand-predict-role             Lambda 실행 역할 (로그 쓰기, 모델 읽기만)
-  로그 그룹    /aws/lambda/bike-demand-predict       보관 7일
-  Lambda 함수  bike-demand-predict                   python3.12, 1024MB, 30초, 동시 실행 2
-
-버킷 이름에 계정 ID 대신 해시를 넣어 공개 기록에 계정 ID 가 드러나지 않게 한다.
-"""
-
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import os
 import re
+import secrets as pysecrets
 import time
 
 import pandas as pd
 
-from .common import ROOT, load_json, model_dir, resolve_profile, resolve_region, write_json
+from .common import (
+    ROOT,
+    load_json,
+    model_dir,
+    resolve_profile,
+    resolve_region,
+    sha256_file,
+    write_json,
+)
 from .evaluate import daily_mae, metrics
-from .runlog import git_info, now_iso
-from .servicecheck import run_cases, sample_day_comparison
+from .runlog import git_info, now_iso, sanitize
+from .servicecheck import expected_model, run_cases, sample_day_comparison
 
 LAMBDA_TRUST = {
     "Version": "2012-10-17",
     "Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"},
                    "Action": "sts:AssumeRole"}],
 }
+NOT_FOUND = {"404", "NoSuchBucket", "NotFound", "ResourceNotFoundException", "NoSuchEntity"}
+STATUS_RETRIES = 10
+STATUS_WAIT_S = 3
 
 
-# ---------------------------------------------------------------- 공통
+def _code(e) -> str:
+    return e.response.get("Error", {}).get("Code", "")
+
 
 class Cloud:
     def __init__(self, cfg: dict, args, ctx=None):
@@ -43,29 +45,27 @@ class Cloud:
         self.profile = resolve_profile(cfg, getattr(args, "profile", None))
         self.region = resolve_region(cfg, getattr(args, "region", None))
         if not self.profile and not os.environ.get("AWS_ACCESS_KEY_ID"):
-            # 기본 자격 증명으로 엉뚱한 계정에 배포하는 일을 막는다.
             raise RuntimeError("AWS 프로필을 --profile 또는 환경 변수 AWS_PROFILE 로 지정하세요")
         self.session = boto3.Session(profile_name=self.profile, region_name=self.region)
         ident = self.session.client("sts").get_caller_identity()
         self.account = ident["Account"]
-        self.caller_arn = ident["Arn"]
+        self.caller_type = ident["Arn"].split(":", 5)[5].split("/")[0]
         if ctx is not None and self.account not in ctx.secrets:
             ctx.secrets.append(self.account)
-        # 화면에만 표시(기록에는 남기지 않음): 어느 계정에 작업하는지 확인용
-        print(f"  AWS 계정 …{self.account[-4:]} / {self.caller_arn.split(':')[-1]} / 프로필 {self.profile} / 리전 {self.region}")
+        print(f"  AWS 계정 …{self.account[-4:]} / {ident['Arn'].split(':', 5)[5]} / 프로필 {self.profile} / 리전 {self.region}")
         self.fn = c["function_name"]
         self.role = c["role_name"]
-        digest = hashlib.sha256(self.account.encode()).hexdigest()[:10]
-        self.bucket = f"{c['bucket_prefix']}-{digest}-{self.region}"
+        self.bucket_prefix = f"{c['bucket_prefix']}-{self.region}-"
         self.log_group = f"/aws/lambda/{self.fn}"
         self.tags = c.get("tags", {})
         self.s3 = self.session.client("s3")
         self.iam = self.session.client("iam")
         self.lam = self.session.client("lambda")
         self.logs = self.session.client("logs")
+        self.bucket = c.get("bucket") or self.find_bucket()
 
     def info(self) -> dict:
-        return {"region": self.region, "profile": self.profile, "caller": self.caller_arn,
+        return {"region": self.region, "profile": self.profile, "caller_type": self.caller_type,
                 "function": self.fn, "role": self.role, "bucket": self.bucket, "log_group": self.log_group}
 
     def role_arn(self) -> str:
@@ -74,19 +74,23 @@ class Cloud:
     def model_key(self) -> str:
         return f"models/{self.cfg['model']['version']}/model.joblib"
 
-    # ------------------------------------------------------------ 준비
+    def find_bucket(self) -> str | None:
+        names = []
+        for page in self.s3.get_paginator("list_buckets").paginate():
+            names += [b["Name"] for b in page.get("Buckets", []) if b["Name"].startswith(self.bucket_prefix)]
+        if len(names) > 1:
+            raise RuntimeError(f"버킷이 여러 개입니다 {names}. config/pipeline.json 의 cloud.bucket 에 하나를 적으세요")
+        return names[0] if names else None
 
     def ensure_bucket(self) -> str:
-        from botocore.exceptions import ClientError
-
-        try:
+        if self.bucket:
             self.s3.head_bucket(Bucket=self.bucket)
             created = False
-        except ClientError as e:
-            if e.response["Error"]["Code"] not in ("404", "NoSuchBucket", "NotFound"):
-                raise
-            self.s3.create_bucket(Bucket=self.bucket,
-                                  CreateBucketConfiguration={"LocationConstraint": self.region})
+        else:
+            self.bucket = self.bucket_prefix + pysecrets.token_hex(4)
+            kwargs = {} if self.region == "us-east-1" else {
+                "CreateBucketConfiguration": {"LocationConstraint": self.region}}
+            self.s3.create_bucket(Bucket=self.bucket, **kwargs)
             self.s3.get_waiter("bucket_exists").wait(Bucket=self.bucket)
             created = True
         self.s3.put_public_access_block(Bucket=self.bucket, PublicAccessBlockConfiguration={
@@ -95,7 +99,6 @@ class Cloud:
         self.s3.put_bucket_versioning(Bucket=self.bucket, VersioningConfiguration={"Status": "Enabled"})
         self.s3.put_bucket_tagging(Bucket=self.bucket, Tagging={
             "TagSet": [{"Key": k, "Value": v} for k, v in self.tags.items()]})
-        # 오래된 배포 패키지와 이전 버전 객체는 30일 뒤 지운다(비용 상한).
         self.s3.put_bucket_lifecycle_configuration(Bucket=self.bucket, LifecycleConfiguration={"Rules": [
             {"ID": "expire-old-packages", "Status": "Enabled", "Filter": {"Prefix": "packages/"},
              "Expiration": {"Days": 30}, "NoncurrentVersionExpiration": {"NoncurrentDays": 1}},
@@ -146,8 +149,6 @@ class Cloud:
             r = self.s3.put_object(Bucket=self.bucket, Key=key, Body=f, **extra)
         return {"uri": f"s3://{self.bucket}/{key}", "version_id": r.get("VersionId"), "etag": r.get("ETag")}
 
-    # ------------------------------------------------------------ 함수
-
     def function_exists(self) -> bool:
         try:
             self.lam.get_function(FunctionName=self.fn)
@@ -161,7 +162,6 @@ class Cloud:
                     EphemeralStorage={"Size": lcfg["ephemeral_storage_mb"]},
                     Environment={"Variables": env}, Description=description[:256])
         if not self.function_exists():
-            # IAM 역할이 막 만들어졌으면 Lambda 가 아직 못 쓸 수 있어 잠시 기다리며 다시 시도한다.
             for attempt in range(10):
                 try:
                     self.lam.create_function(FunctionName=self.fn, Code={"S3Bucket": self.bucket, "S3Key": code_key},
@@ -190,13 +190,22 @@ class Cloud:
                 "timeout_s": ver["Timeout"], "runtime": ver["Runtime"], "reserved_concurrency": concurrency}
 
     def set_concurrency(self, n) -> dict:
+        from botocore.exceptions import ClientError
+
         if not n:
-            return {"set": False, "reason": "설정 안 함"}
+            try:
+                self.lam.delete_function_concurrency(FunctionName=self.fn)
+            except ClientError as e:
+                if _code(e) not in NOT_FOUND:
+                    raise
+            return {"set": False, "reason": "설정하지 않음 (예약 해제)"}
         try:
             self.lam.put_function_concurrency(FunctionName=self.fn, ReservedConcurrentExecutions=int(n))
             return {"set": True, "value": int(n)}
-        except Exception as e:  # 계정 한도가 낮으면(새 계정 10) 예약이 거절된다
-            return {"set": False, "reason": f"{type(e).__name__}: {e}"}
+        except ClientError as e:
+            if _code(e) != "InvalidParameterValueException":
+                raise
+            return {"set": False, "reason": f"계정 동시 실행 한도가 낮아 예약하지 못함: {e}"}
 
     def latest_version(self) -> str:
         versions = []
@@ -214,25 +223,42 @@ class Cloud:
         raw = r["Payload"].read().decode()
         tail = base64.b64decode(r.get("LogResult", "")).decode(errors="replace")
         meta = {
-            "request_id": r["ResponseMetadata"]["RequestId"],
+            "request_id": r.get("ResponseMetadata", {}).get("RequestId"),
             "function_version": r.get("ExecutedVersion"),
             "function_error": r.get("FunctionError"),
             "client_ms": ms,
             "report": parse_report(tail),
         }
         body = json.loads(raw) if raw else {}
-        if r.get("FunctionError"):  # 처리되지 않은 예외(시간 초과, import 실패 등)
+        if not isinstance(body, dict):
+            body = {"statusCode": None, "body": {"ok": False, "error": {
+                "code": "BAD_RESPONSE", "message": f"응답이 객체가 아닙니다: {raw[:200]}"}}}
+        if r.get("FunctionError"):
             meta["log_tail"] = tail[-1500:]
             return {"statusCode": None, "body": {"ok": False, "error": {
                 "code": "FUNCTION_ERROR", "message": body.get("errorMessage"),
                 "type": body.get("errorType")}}}, meta
         return body, meta
 
-    # ------------------------------------------------------------ 조회, 정리
-
-    def status(self) -> dict:
+    def bucket_status(self) -> dict:
         from botocore.exceptions import ClientError
 
+        if not self.bucket:
+            return {"exists": False}
+        try:
+            self.s3.head_bucket(Bucket=self.bucket)
+        except ClientError as e:
+            if _code(e) in NOT_FOUND:
+                return {"exists": False}
+            return {"exists": None, "error": _code(e)}
+        n, size = 0, 0
+        for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=self.bucket):
+            for v in page.get("Versions", []):
+                n += 1
+                size += v["Size"]
+        return {"exists": True, "object_versions": n, "total_mb": round(size / 1e6, 2)}
+
+    def status(self) -> dict:
         out = {}
         try:
             f = self.lam.get_function(FunctionName=self.fn)
@@ -240,11 +266,12 @@ class Cloud:
             versions = []
             for page in self.lam.get_paginator("list_versions_by_function").paginate(FunctionName=self.fn):
                 versions += [v["Version"] for v in page["Versions"]]
-            out["lambda_function"] = {"exists": True, "state": conf.get("State"), "runtime": conf["Runtime"],
-                                      "memory_mb": conf["MemorySize"], "timeout_s": conf["Timeout"],
-                                      "last_modified": conf["LastModified"], "versions": versions,
-                                      "reserved_concurrency": (f.get("Concurrency") or {}).get("ReservedConcurrentExecutions"),
-                                      "env_MODEL_URI": conf.get("Environment", {}).get("Variables", {}).get("MODEL_URI")}
+            out["lambda_function"] = {
+                "exists": True, "state": conf.get("State"), "runtime": conf["Runtime"],
+                "memory_mb": conf["MemorySize"], "timeout_s": conf["Timeout"],
+                "last_modified": conf["LastModified"], "versions": versions,
+                "reserved_concurrency": (f.get("Concurrency") or {}).get("ReservedConcurrentExecutions"),
+                "env_MODEL_URI": conf.get("Environment", {}).get("Variables", {}).get("MODEL_URI")}
         except self.lam.exceptions.ResourceNotFoundException:
             out["lambda_function"] = {"exists": False}
         try:
@@ -253,20 +280,11 @@ class Cloud:
             out["iam_role"] = {"exists": True, "inline_policies": pols}
         except self.iam.exceptions.NoSuchEntityException:
             out["iam_role"] = {"exists": False}
-        try:
-            self.s3.head_bucket(Bucket=self.bucket)
-            n, size = 0, 0
-            for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=self.bucket):
-                for v in page.get("Versions", []):
-                    n += 1
-                    size += v["Size"]
-            out["s3_bucket"] = {"exists": True, "object_versions": n, "total_mb": round(size / 1e6, 2)}
-        except ClientError as e:
-            out["s3_bucket"] = {"exists": False, "error": e.response["Error"]["Code"]}
+        out["s3_bucket"] = self.bucket_status()
         groups = self.logs.describe_log_groups(logGroupNamePrefix=self.log_group)["logGroups"]
         g = next((x for x in groups if x["logGroupName"] == self.log_group), None)
-        out["log_group"] = ({"exists": True, "retention_days": g.get("retentionInDays"), "stored_bytes": g.get("storedBytes")}
-                            if g else {"exists": False})
+        out["log_group"] = ({"exists": True, "retention_days": g.get("retentionInDays"),
+                             "stored_bytes": g.get("storedBytes")} if g else {"exists": False})
         return out
 
     def cleanup(self) -> list[dict]:
@@ -279,9 +297,7 @@ class Cloud:
                 fn()
                 done.append({"resource": name, "result": "deleted"})
             except ClientError as e:
-                code = e.response["Error"]["Code"]
-                gone = code in ("ResourceNotFoundException", "NoSuchEntity", "NoSuchBucket", "404")
-                done.append({"resource": name, "result": "not_found" if gone else f"error: {code}"})
+                done.append({"resource": name, "result": "not_found" if _code(e) in NOT_FOUND else f"error: {_code(e)}"})
 
         step(f"lambda:{self.fn}", lambda: self.lam.delete_function(FunctionName=self.fn))
         step(f"logs:{self.log_group}", lambda: self.logs.delete_log_group(logGroupName=self.log_group))
@@ -293,6 +309,8 @@ class Cloud:
         step(f"iam:{self.role}", del_role)
 
         def del_bucket():
+            if not self.bucket:
+                raise ClientError({"Error": {"Code": "NoSuchBucket", "Message": "버킷 없음"}}, "HeadBucket")
             self.s3.head_bucket(Bucket=self.bucket)
             for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=self.bucket):
                 objs = [{"Key": v["Key"], "VersionId": v["VersionId"]}
@@ -324,28 +342,68 @@ def parse_report(tail: str) -> dict:
     return out
 
 
-def _lambda_cfg(ctx) -> tuple[dict, str]:
+def all_gone(status: dict) -> bool:
+    return all(v.get("exists") is False for v in status.values())
+
+
+def _lambda_cfg(ctx) -> dict:
     path = ROOT / (ctx.args.lambda_config or ctx.cfg["cloud"]["lambda_config"])
     ctx.add_config(path)
-    return load_json(path), str(path)
+    return load_json(path)
 
 
-# ---------------------------------------------------------------- 단계
+def _load_or_empty(path) -> dict:
+    return load_json(path) if path.exists() else {}
+
+
+def preflight_problems(model_sha: str, model_file_sha: str, evaluation: dict, service_check: dict,
+                       package_info: dict, zip_sha: str | None, app_files: dict, requirements_sha: str) -> list[str]:
+    problems = []
+    if model_file_sha != model_sha:
+        problems.append("모델 파일이 metadata.json 의 sha256 과 다름")
+    if not evaluation.get("passed") or (evaluation.get("model") or {}).get("sha256") != model_sha:
+        problems.append("이 모델로 evaluate 를 통과한 기록이 없음")
+    if not service_check.get("all_passed") or (service_check.get("model") or {}).get("sha256") != model_sha:
+        problems.append("이 모델로 check-local 을 통과한 기록이 없음")
+    if zip_sha is None or zip_sha != package_info.get("zip_sha256"):
+        problems.append("build/lambda_package.zip 이 없거나 package.json 과 다름")
+    if package_info.get("app_files") != app_files or package_info.get("requirements_sha256") != requirements_sha:
+        problems.append("패키지를 만든 뒤 Lambda 코드나 requirements-lambda.txt 가 바뀜")
+    return problems
+
+
+def deploy_preflight(cfg: dict) -> dict:
+    from . import package
+
+    meta = load_json(model_dir(cfg) / "metadata.json")
+    pkg = _load_or_empty(ROOT / "results" / "cloud" / "package.json")
+    zip_path = package.ZIP_PATH
+    problems = preflight_problems(
+        model_sha=meta["model_sha256"],
+        model_file_sha=sha256_file(model_dir(cfg) / "model.joblib"),
+        evaluation=_load_or_empty(ROOT / "results" / "evaluation" / "metrics.json"),
+        service_check=_load_or_empty(ROOT / "results" / "service_check" / "local.json"),
+        package_info=pkg,
+        zip_sha=sha256_file(zip_path) if zip_path.exists() else None,
+        app_files={arc: sha256_file(src) for arc, src in package.APP_FILES.items()},
+        requirements_sha=sha256_file(package.REQUIREMENTS),
+    )
+    if problems:
+        raise RuntimeError("배포 전 확인 실패: " + "; ".join(problems)
+                           + ". python -m bikeml run local package 를 먼저 실행하세요")
+    return {"meta": meta, "zip_sha256": pkg["zip_sha256"], "zip_path": zip_path}
+
 
 def step_deploy(ctx) -> None:
-    from .package import ZIP_PATH
-
     cfg = ctx.cfg
-    cloud = Cloud(cfg, ctx.args, ctx)
-    lcfg, _ = _lambda_cfg(ctx)
-    meta = load_json(model_dir(cfg) / "metadata.json")
+    pre = deploy_preflight(cfg)
+    meta, pkg_sha, zip_path = pre["meta"], pre["zip_sha256"], pre["zip_path"]
     mpath = model_dir(cfg) / "model.joblib"
     ctx.add_input(mpath)
+    ctx.add_input(zip_path)
     ctx.model = {"name": meta["name"], "version": meta["version"], "sha256": meta["model_sha256"]}
-    if not ZIP_PATH.exists():
-        raise FileNotFoundError("배포 패키지가 없습니다. package 단계를 먼저 실행하세요")
-    pkg_sha = ctx.state.get("package", {}).get("zip_sha256") or load_json(ROOT / "results/cloud/package.json")["zip_sha256"]
-    ctx.add_input(ZIP_PATH)
+    lcfg = _lambda_cfg(ctx)
+    cloud = Cloud(cfg, ctx.args, ctx)
 
     res = {"cloud": cloud.info()}
     res["bucket"] = cloud.ensure_bucket()
@@ -356,14 +414,17 @@ def step_deploy(ctx) -> None:
     res["model_upload"] = cloud.upload(mpath, model_key, {"sha256": meta["model_sha256"], "version": meta["version"]})
     res["metadata_upload"] = cloud.upload(model_dir(cfg) / "metadata.json", f"models/{meta['version']}/metadata.json")
     code_key = f"packages/lambda-{pkg_sha[:12]}.zip"
-    res["package_upload"] = cloud.upload(ZIP_PATH, code_key, {"sha256": pkg_sha})
+    res["package_upload"] = cloud.upload(zip_path, code_key, {"sha256": pkg_sha})
 
     model_uri = getattr(ctx.args, "model_uri_override", None) or f"s3://{cloud.bucket}/{model_key}"
-    env = {"MODEL_URI": model_uri, "MODEL_VERSION": meta["version"], "MODEL_SHA256": meta["model_sha256"]}
-    commit = (git_info()["commit"] or "nogit")[:7]
+    env = {"MODEL_URI": model_uri, "MODEL_VERSION": meta["version"], "MODEL_SHA256": meta["model_sha256"],
+           "JOBLIB_MULTIPROCESSING": "0"}
+    git = git_info()
+    commit = (git["commit"] or "nogit")[:7] + ("+dirty" if git["code_dirty"] else "")
     desc = f"git {commit} model {meta['version']} pkg {pkg_sha[:12]}"
     res["function"] = cloud.deploy_function(lcfg, code_key, env, desc)
     res["env"] = env
+    res["cloud"] = cloud.info()
     write_json(ctx.out("results/cloud/deploy.json"), res)
     ctx.cloud = {**cloud.info(), "function_version": res["function"]["version"],
                  "code_sha256": res["function"]["code_sha256"], "model_uri": model_uri,
@@ -375,9 +436,8 @@ def step_deploy(ctx) -> None:
 def _cloud_invoker(ctx):
     cloud = Cloud(ctx.cfg, ctx.args, ctx)
     version = cloud.latest_version()
-    meta = load_json(model_dir(ctx.cfg) / "metadata.json")
-    expected = {"version": meta["version"], "sha256": meta["model_sha256"]}
-    ctx.model = {"name": meta["name"], **expected}
+    meta, expected = expected_model(ctx.cfg)
+    ctx.model = {"name": meta["name"], "version": meta["version"], "sha256": meta["model_sha256"]}
     ctx.cloud = {**cloud.info(), "function_version": version}
 
     def invoke(payload):
@@ -388,7 +448,7 @@ def _cloud_invoker(ctx):
 def step_smoke(ctx) -> None:
     cloud, version, expected, invoke = _cloud_invoker(ctx)
     ctx.add_input(ROOT / "samples" / "service_cases.json")
-    report = run_cases(invoke, expected, f"lambda:{cloud.fn}:{version}")
+    report = run_cases(invoke, expected, f"lambda:{cloud.fn}:{version}", ctx.cfg, ctx.secrets)
     day = sample_day_comparison(report.pop("responses"), ctx.cfg)
     report["sample_day"] = day
     write_json(ctx.out("results/service_check/cloud.json"), report)
@@ -409,20 +469,27 @@ def step_cloud_eval(ctx) -> None:
     ctx.add_input(local_path)
     test = pd.read_csv(test_path)
     local = pd.read_csv(local_path)
+    if len(local) != len(test) or not (local.datetime.to_numpy() == test.datetime.to_numpy()).all():
+        raise RuntimeError("로컬 예측 파일과 평가 자료의 행이 맞지 않습니다. evaluate 단계를 다시 실행하세요")
     recs = records(test)
     size = cfg["evaluation"]["cloud_batch_size"]
 
     preds, calls = [], []
     for start in range(0, len(recs), size):
         batch = recs[start:start + size]
-        resp, meta = invoke({"instances": batch})
+        resp, meta = sanitize(invoke({"instances": batch}), ctx.secrets)
         calls.append({"rows": f"{start}-{start + len(batch) - 1}", "status": resp.get("statusCode"), **meta})
+        body = resp.get("body") or {}
+        problem = None
         if resp.get("statusCode") != 200:
+            problem = f"Lambda 호출 실패 (행 {start}~): {json.dumps(body, ensure_ascii=False)[:300]}"
+        elif body.get("model_sha256") != expected["sha256"]:
+            problem = "Lambda 가 다른 모델로 예측했습니다"
+        elif len(body.get("predictions") or []) != len(batch):
+            problem = f"예측 건수 {len(body.get('predictions') or [])} 가 요청 건수 {len(batch)} 와 다릅니다"
+        if problem:
             write_json(ctx.out("results/cloud/cloud_eval_calls.json"), calls)
-            raise RuntimeError(f"Lambda 호출 실패 (행 {start}~): {json.dumps(resp.get('body'), ensure_ascii=False)[:300]}")
-        body = resp["body"]
-        if body["model_sha256"] != expected["sha256"]:
-            raise RuntimeError("Lambda 가 다른 모델로 예측했습니다")
+            raise RuntimeError(problem)
         preds += [p["predicted_value"] for p in body["predictions"]]
 
     y = test["cnt"].to_numpy()
@@ -451,8 +518,7 @@ def step_cloud_eval(ctx) -> None:
 
 def step_status(ctx) -> None:
     cloud = Cloud(ctx.cfg, ctx.args, ctx)
-    st = {"checked_at": now_iso(), **cloud.info(),
-          "resources": cloud.status()}
+    st = {"checked_at": now_iso(), **cloud.info(), "resources": cloud.status()}
     name = getattr(ctx.args, "status_name", None) or "status"
     write_json(ctx.out(f"results/cloud/{name}.json"), st)
     ctx.cloud = cloud.info()
@@ -464,12 +530,16 @@ def step_cleanup(ctx) -> None:
     cloud = Cloud(ctx.cfg, ctx.args, ctx)
     before = cloud.status()
     deleted = cloud.cleanup()
-    time.sleep(3)
     after = cloud.status()
+    for _ in range(STATUS_RETRIES):
+        if all_gone(after):
+            break
+        time.sleep(STATUS_WAIT_S)
+        after = cloud.status()
     report = {"cleaned_at": now_iso(), **cloud.info(), "before": before, "actions": deleted, "after": after,
-              "all_gone": not any(v.get("exists") for v in after.values())}
+              "all_gone": all_gone(after)}
     write_json(ctx.out("results/cloud/cleanup.json"), report)
     ctx.cloud = cloud.info()
     ctx.summary = {"all_gone": report["all_gone"], "actions": {d["resource"]: d["result"] for d in deleted}}
     if not report["all_gone"]:
-        raise RuntimeError(f"남은 자원이 있습니다: {after}")
+        raise RuntimeError(f"남은 자원이 있거나 확인하지 못했습니다: {after}")

@@ -1,10 +1,15 @@
-"""원자료로 만든 특성이 원자료의 달력 값과 같은지, 분할에 시간 누출이 없는지 확인."""
-
 import pandas as pd
 import pytest
 
 from bikeml.common import ROOT, load_config
-from bikeml.data import check_derived, feature_matrix, load_raw, quality_checks, split, to_requests
+from bikeml.data import (
+    check_derived,
+    feature_matrix,
+    load_raw,
+    quality_checks,
+    split,
+    to_requests,
+)
 
 CFG = load_config()
 RAW = ROOT / CFG["data"]["raw_dir"] / "hour.csv"

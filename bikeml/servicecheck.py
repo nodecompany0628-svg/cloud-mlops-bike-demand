@@ -1,9 +1,3 @@
-"""서비스 정상 동작 검사.
-
-samples/service_cases.json 의 사례를 보내고 상태 코드, 오류 위치, 건수, 값의 범위,
-모델 버전, 같은 입력의 같은 결과를 확인한다. 로컬 핸들러와 Lambda 에 같은 사례를 쓴다.
-"""
-
 from __future__ import annotations
 
 import copy
@@ -14,6 +8,7 @@ import sys
 import time
 
 from .common import ROOT, load_json, model_dir, write_json
+from .runlog import sanitize
 
 CASES_FILE = ROOT / "samples" / "service_cases.json"
 
@@ -22,11 +17,17 @@ def load_cases() -> list[dict]:
     return load_json(CASES_FILE)["cases"]
 
 
-def build_payload(case: dict, by_name: dict) -> dict:
+def expected_model(cfg: dict) -> tuple[dict, dict]:
+    meta = load_json(model_dir(cfg) / "metadata.json")
+    return meta, {"version": meta["version"], "sha256": meta["model_sha256"],
+                  "sklearn": meta["library_versions"]["scikit-learn"]}
+
+
+def build_payload(case: dict, by_name: dict, cfg: dict) -> dict:
     if "payload" in case:
         return copy.deepcopy(case["payload"])
     if "payload_file" in case:
-        return load_json(ROOT / case["payload_file"])
+        return load_json(ROOT / case["payload_file"].format(sample_day=cfg["evaluation"]["sample_day"]))
     gen = case["generate"]
     one = by_name[gen["repeat_instance_of"]]["payload"]["instances"][0]
     return {"instances": [dict(one) for _ in range(gen["count"])]}
@@ -52,6 +53,9 @@ def check_response(case: dict, resp: dict, expected_model: dict, responses: dict
             problems.append(f"모델 버전 {body.get('model_version')} (기대 {expected_model['version']})")
         if body.get("model_sha256") != expected_model["sha256"]:
             problems.append("모델 sha256 이 다름")
+        runtime_sklearn = (body.get("runtime") or {}).get("scikit-learn")
+        if "sklearn" in expected_model and runtime_sklearn != expected_model["sklearn"]:
+            problems.append(f"실행 환경 scikit-learn {runtime_sklearn} (기대 {expected_model['sklearn']})")
         if "warning_contains" in exp and not any(exp["warning_contains"] in w for w in body.get("warnings", [])):
             problems.append(f"경고에 '{exp['warning_contains']}' 없음")
         ref = exp.get("same_prediction_as")
@@ -72,16 +76,15 @@ def check_response(case: dict, resp: dict, expected_model: dict, responses: dict
     return problems
 
 
-def run_cases(invoke, expected_model: dict, target: str) -> dict:
-    """invoke(payload) -> (response dict, meta dict)."""
+def run_cases(invoke, expected_model: dict, target: str, cfg: dict, secrets=()) -> dict:
     cases = load_cases()
     by_name = {c["name"]: c for c in cases}
     responses, results = {}, []
     for case in cases:
-        payload = build_payload(case, by_name)
+        payload = build_payload(case, by_name, cfg)
         runs = []
         for _ in range(case.get("repeat", 1)):
-            resp, meta = invoke(payload)
+            resp, meta = sanitize(invoke(payload), list(secrets))
             runs.append((resp, meta))
         resp, meta = runs[0]
         responses[case["name"]] = resp
@@ -115,8 +118,10 @@ def sample_day_comparison(responses: dict, cfg: dict) -> dict | None:
     if not actual_path.exists() or not body.get("predictions"):
         return None
     actual = load_json(actual_path)
+    if [p["datetime"] for p in body["predictions"]] != actual["datetime"]:
+        return None
     rows = []
-    for t, a, p in zip(actual["datetime"], actual["cnt"], body["predictions"]):
+    for t, a, p in zip(actual["datetime"], actual["cnt"], body["predictions"], strict=True):
         rows.append({"datetime": t, "actual": a, "predicted": p["predicted_count"]})
     mae = sum(abs(r["actual"] - r["predicted"]) for r in rows) / len(rows)
     return {"day": day, "mae": round(mae, 2), "actual_total": sum(r["actual"] for r in rows),
@@ -124,11 +129,9 @@ def sample_day_comparison(responses: dict, cfg: dict) -> dict | None:
 
 
 class LocalInvoker:
-    """lambda_src/lambda_function.py 를 로컬에서 그대로 부른다(JSON 직렬화 포함)."""
-
     def __init__(self, cfg: dict):
         mdir = model_dir(cfg)
-        meta = load_json(mdir / "metadata.json")
+        meta, self.expected_model = expected_model(cfg)
         os.environ["MODEL_URI"] = str(mdir / "model.joblib")
         os.environ["MODEL_VERSION"] = meta["version"]
         os.environ["MODEL_SHA256"] = meta["model_sha256"]
@@ -137,7 +140,7 @@ class LocalInvoker:
             sys.path.insert(0, src)
         self.fn = importlib.reload(importlib.import_module("lambda_function"))
         self.fn._CACHE.clear()
-        self.expected_model = {"version": meta["version"], "sha256": meta["model_sha256"]}
+        self.name = meta["name"]
 
     def __call__(self, payload: dict):
         event = json.loads(json.dumps(payload))
@@ -149,9 +152,9 @@ class LocalInvoker:
 
 def step_check_local(ctx) -> None:
     inv = LocalInvoker(ctx.cfg)
-    ctx.model = {"name": ctx.cfg["model"]["name"], **inv.expected_model}
+    ctx.model = {"name": inv.name, "version": inv.expected_model["version"], "sha256": inv.expected_model["sha256"]}
     ctx.add_input(ROOT / "samples" / "service_cases.json")
-    report = run_cases(inv, inv.expected_model, "local")
+    report = run_cases(inv, inv.expected_model, "local", ctx.cfg)
     day = sample_day_comparison(report.pop("responses"), ctx.cfg)
     report["sample_day"] = day
     write_json(ctx.out("results/service_check/local.json"), report)

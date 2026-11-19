@@ -1,12 +1,3 @@
-"""평가: 학습한 모델과 단순 기준 방법을 같은 평가 자료로 비교한다.
-
-기준 방법(학습 자료로만 계산)
-  - mean:      학습 자료 전체 평균
-  - hour_mean: 학습 자료의 (시각, 근무일 여부)별 평균
-지표: MAE, RMSE (단위: 대/시간), 평균 오차(bias), 일별 합계 MAE(대/일)
-합격 기준(config.evaluation.criteria)을 넘지 못하면 단계를 실패로 끝내 배포로 넘어가지 않는다.
-"""
-
 from __future__ import annotations
 
 import joblib
@@ -17,7 +8,7 @@ from .common import ROOT, load_json, model_dir, sha256_file, write_json
 from .data import TARGET, feature_matrix
 from .features import FEATURES
 
-SANDY_DAYS = ("2012-10-29", "2012-10-30")  # 허리케인 샌디로 운영이 멈춘 날
+SANDY_DAYS = ("2012-10-29", "2012-10-30")
 
 
 def metrics(y_true, y_pred) -> dict:
@@ -51,7 +42,7 @@ def baselines(train: pd.DataFrame, X_train: np.ndarray, X_test: np.ndarray) -> d
     y = train[TARGET].to_numpy(dtype=float)
     hr_i, wd_i = FEATURES.index("hr"), FEATURES.index("workingday")
     table = pd.DataFrame({"hr": X_train[:, hr_i], "wd": X_train[:, wd_i], "y": y}).groupby(["hr", "wd"]).y.mean()
-    keys = list(zip(X_test[:, hr_i], X_test[:, wd_i]))
+    keys = list(zip(X_test[:, hr_i], X_test[:, wd_i], strict=True))
     return {
         "mean": np.full(len(X_test), y.mean()),
         "hour_mean": np.array([table.get(k, y.mean()) for k in keys]),
@@ -72,7 +63,6 @@ def step_evaluate(ctx) -> None:
     X_test = np.asarray(feature_matrix(test), dtype=float)
     y = test[TARGET].to_numpy(dtype=float)
 
-    # 서비스 응답과 같은 방식(0 미만 잘라냄, 소수 둘째 자리)으로 맞춘다.
     pred = np.round(np.clip(model.predict(X_test), 0, None), 2)
     base = baselines(train, X_train, X_test)
 
@@ -105,7 +95,6 @@ def step_evaluate(ctx) -> None:
     out.sort_values("abs_error_model", ascending=False).head(15).to_csv(
         ctx.out("results/evaluation/worst_errors.csv"), index=False, lineterminator="\n")
 
-    # 가장 크게 틀린 한 건: 같은 시각의 앞뒤 7일과 비교할 수 있게 저장한다.
     worst = out.loc[out.abs_error_model.idxmax()]
     wday = pd.Timestamp(worst.datetime[:10])
     near = out[(out.datetime.str.slice(11, 16) == worst.datetime[11:16])
@@ -133,7 +122,7 @@ def step_evaluate(ctx) -> None:
                       "actual_mean": round(float(y.mean()), 2)},
         "unit": "대/시간 (daily_total_mae 는 대/일)",
         "metrics": result,
-        "by_month": by_month.reset_index().to_dict(orient="records"),
+        "by_month": by_month.reset_index().astype({"n": int}).to_dict(orient="records"),
         "criteria": crit,
         "checks": checks,
         "passed": bool(passed),

@@ -22,7 +22,7 @@
 
 | 선택 | 이유 |
 |---|---|
-| **AWS Lambda** (서버리스 함수) | 운영 담당자가 하루 한두 번 "내일 24시간 예보"를 넣어 호출하는 용도입니다. 상시 서버나 화면이 필요 없고, 호출할 때만 실행되어 요청이 없으면 비용이 0입니다. 모델이 작아(0.7MB) 한 번에 1,000건까지 1초 안팎으로 예측할 수 있습니다. |
+| **AWS Lambda** (서버리스 함수) | 운영 담당자가 하루 한두 번 "내일 24시간 예보"를 넣어 호출하는 용도입니다. 상시 서버나 화면이 필요 없고, 호출할 때만 실행되어 요청이 없으면 비용이 0입니다. 모델이 작아(0.7MB) 1,000건 예측이 로컬 PC에서 23ms 걸립니다(Lambda 실측은 배포 후 REPORT 로그로 기록). |
 | 직접 호출(`lambda:InvokeFunction`), 공개 URL 없음 | 사용자가 담당자 몇 명뿐이라 공개 HTTP 주소를 열 이유가 없습니다. IAM 권한이 있는 사람만 호출하므로 인증을 따로 만들 필요가 없습니다. 나중에 HTTP가 필요하면 핸들러가 `{"body": "..."}` 형태도 이미 받습니다. |
 | **S3**에 모델 보관, 실행 때 내려받기 | 모델 버전을 코드 패키지와 떼어 관리합니다. 모델만 바꿀 때는 환경 변수 `MODEL_URI`만 바꾸면 됩니다. 버킷 버전 관리를 켜서 덮어써도 이전 파일이 남습니다. |
 | zip 패키지 (컨테이너 이미지 아님) | 이 PC에 Docker가 없습니다. scikit-learn, scipy, numpy의 리눅스용 휠을 `pip --platform manylinux…`로 받아 zip을 만듭니다. 압축 해제 169MB로 Lambda 한도 250MB 안입니다. zip이 50MB를 넘어 S3를 거쳐 올립니다. |
@@ -93,7 +93,7 @@ Lambda 실행 역할(`bike-demand-predict-role`)의 권한은 두 가지뿐입�
 
 ⏳ **실행 전**. 계획은 다음과 같습니다. 과제 예시 중 "잘못된 모델 경로"를 클라우드에서 재현합니다.
 
-1. 재현: `python -m bikeml run deploy smoke cloud-eval --model-uri-override s3://<버킷>/models/hgb-v1/model.pkl`
+1. 재현: `python -m bikeml --profile <프로필> run deploy smoke cloud-eval --model-uri-override s3://<버킷>/models/hgb-v1/model.pkl`
    (실제 파일은 `model.joblib`. 오타가 난 경로로 배포)
 2. 기대 영향: 모든 요청이 `500 MODEL_LOAD_FAILED`, smoke 실패, cloud-eval은 실행하지 않음(skipped)
 3. 원인 조사: 응답 메시지, CloudWatch 로그, 운영자 권한으로 `s3api head-object`를 실행해 비교. Lambda 역할에는 `s3:ListBucket`이 없어서, 없는 객체도 404가 아니라 403(Forbidden)으로 보일 것으로 예상합니다. 이것도 확인합니다.

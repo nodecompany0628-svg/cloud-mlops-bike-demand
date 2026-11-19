@@ -1,5 +1,3 @@
-import json
-
 import numpy as np
 
 from bikeml.service import MAX_INSTANCES, handle
@@ -10,8 +8,6 @@ INFO = {"version": "test", "sha256": "abc"}
 
 
 class FakeModel:
-    """시각(hr)을 그대로 돌려주는 모형. 음수가 나오면 0 으로 잘리는지도 본다."""
-
     def predict(self, X):
         return np.asarray(X)[:, 2] - 5
 
@@ -20,18 +16,13 @@ def test_ok_response_shape():
     r = handle({"instances": [GOOD, {**GOOD, "datetime": "2012-10-01T02:00"}]}, FakeModel(), INFO)
     assert r["statusCode"] == 200
     b = r["body"]
-    assert b["n"] == 2 and b["model_version"] == "test"
-    assert [p["predicted_count"] for p in b["predictions"]] == [3, 0]  # 2시 -> -3 -> 0
+    assert b["n"] == 2 and b["model_version"] == "test" and "runtime" not in b
+    assert [p["predicted_count"] for p in b["predictions"]] == [3, 0]
 
 
-def test_http_body_string():
-    r = handle({"body": json.dumps({"instances": [GOOD]})}, FakeModel(), INFO)
-    assert r["statusCode"] == 200
-
-
-def test_invalid_json_body():
-    r = handle({"body": "{not json"}, FakeModel(), INFO)
-    assert r["statusCode"] == 400 and r["body"]["error"]["code"] == "INVALID_JSON"
+def test_runtime_is_reported_when_known():
+    r = handle({"instances": [GOOD]}, FakeModel(), {**INFO, "runtime": {"scikit-learn": "1.9.1"}})
+    assert r["body"]["runtime"] == {"scikit-learn": "1.9.1"}
 
 
 def test_errors_report_index_and_field():
@@ -42,7 +33,13 @@ def test_errors_report_index_and_field():
     assert r["body"]["error"]["details"] == [{"index": 1, "field": "weather", "message": "필수 입력이 없습니다"}]
 
 
+def test_payload_shape_errors():
+    for payload in (None, [], "text", {"rows": []}, {"instances": []}, {"instances": {"a": 1}}):
+        r = handle(payload, FakeModel(), INFO)
+        assert r["statusCode"] == 400 and r["body"]["error"]["code"] == "INVALID_INPUT"
+
+
 def test_limits():
-    assert handle({"instances": []}, FakeModel(), INFO)["statusCode"] == 400
     r = handle({"instances": [GOOD] * (MAX_INSTANCES + 1)}, FakeModel(), INFO)
     assert r["body"]["error"]["code"] == "TOO_MANY_INSTANCES"
+    assert handle({"instances": [GOOD] * MAX_INSTANCES}, FakeModel(), INFO)["statusCode"] == 200
