@@ -81,7 +81,7 @@
 | 기준 방법 MAE | 시간대 평균 94.78, 전체 평균 170.51 대/시간. 시간대 평균보다 49.9% 낮아 합격 | 같은 파일 |
 | 서비스 검사 (로컬 핸들러) | 12/12 통과 | [results/service_check/local.json](results/service_check/local.json) |
 | 실패 처리 예시 | 합격 기준을 90%로 올린 설정에서 evaluate 실패, check-local 건너뜀, 정상 결과는 그대로 | [results/failed/](results/failed/), [runs/run_log.jsonl](runs/run_log.jsonl) |
-| 테스트 | 101개 통과 | `python -m pytest -q` |
+| 테스트 | 107개 통과 | `python -m pytest -q` |
 | Lambda 패키지 | zip 64.29MB, 압축 해제 198.94MB (한도 250MB) | [results/cloud/package.json](results/cloud/package.json) |
 | 실제 AWS 실행 | 실행 전 | [docs/cloud.md](docs/cloud.md) |
 
@@ -91,15 +91,16 @@
 - 확인한 환경: Windows 11, Python 3.12.13, pip 26.3, uv 0.11.16
 - 라이브러리 버전: [requirements.txt](requirements.txt)(파이프라인), [requirements-dev.txt](requirements-dev.txt)(테스트: pytest, moto), [requirements-lambda.txt](requirements-lambda.txt)(Lambda 패키지). 세 파일 모두 간접 의존성까지 버전을 고정했다(Windows 전용 패키지 2개는 `sys_platform == "win32"` 조건). requirements.txt와 requirements-lambda.txt의 scikit-learn, numpy 버전이 같아야 저장한 모델을 Lambda에서 불러올 수 있다.
 - 클라우드 단계: AWS 자격 증명을 로컬 프로필로 등록하고 [docs/iam/operator-policy.json](docs/iam/operator-policy.json) 범위의 권한을 준다. AWS CLI는 없어도 된다(boto3 사용).
-- 프로필을 지정하지 않으면 클라우드 단계는 AWS에 접속하기 전에 멈춘다. 기본 자격 증명으로 다른 계정에 배포하는 일을 막기 위해서다. 프로필(`--profile`, `AWS_PROFILE`, 설정의 `cloud.profile`)이 하나라도 지정되어 있으면 그 프로필을 쓴다. 프로필 없이 환경 변수의 키(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)를 쓰려면 `BIKEML_USE_ENV_CREDENTIALS=1`도 함께 지정해야 하고, 이때는 환경 변수의 키만 쓴다(키가 없으면 멈춘다).
+- 프로필을 지정하지 않으면 클라우드 단계는 AWS에 접속하기 전에 멈춘다. 기본 자격 증명으로 다른 계정에 배포하는 일을 막기 위해서다. 프로필(`--profile`, `AWS_PROFILE`, 설정의 `cloud.profile`)이 하나라도 지정되어 있으면 그 프로필을 쓴다. 설정 파일은 공개 저장소에 올라가므로 프로필 이름은 `--profile`이나 `AWS_PROFILE`로 주는 것을 권한다. 프로필 없이 환경 변수의 키(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)를 쓰려면 `BIKEML_USE_ENV_CREDENTIALS=1`도 함께 지정해야 하고, 이때는 환경 변수의 키만 쓴다(키가 없으면 멈춘다).
 - 로컬 단계와 테스트는 AWS 없이 실행된다.
 
 ## 5. 자원 준비와 설정
 
-1. AWS에서 IAM 사용자를 만들고, [docs/iam/operator-policy.json](docs/iam/operator-policy.json)으로 고객 관리형 정책을 만들어 그 사용자에게 붙인다. 이 정책은 2,048자를 넘어 사용자 인라인 정책으로는 붙일 수 없다(고객 관리형 정책 한도는 6,144자).
-2. 이 PC에 프로필로 등록한다: `aws configure --profile mlops` 또는 `~/.aws/credentials`에 직접 적는다. 키는 저장소에 넣지 않는다.
-3. 리전과 이름은 [config/pipeline.json](config/pipeline.json)의 `cloud`에서, 메모리·제한 시간·동시 실행은 [config/lambda.json](config/lambda.json)에서 바꾼다. 함수, 역할, 버킷 접두어 이름을 바꾸면 [docs/iam/operator-policy.json](docs/iam/operator-policy.json)의 자원 이름도 같이 바꿔야 한다.
-4. S3 버킷, IAM 역할, 로그 그룹, Lambda 함수는 `deploy` 단계가 만든다. 버킷 이름은 `bike-demand-mlops-<리전>-<임의 8자리>`이고, 다음 실행부터는 같은 접두어의 버킷을 찾아 다시 쓴다.
+1. 관리자(또는 루트)가 [docs/iam/lambda-boundary.json](docs/iam/lambda-boundary.json)으로 `bike-demand-predict-boundary`라는 고객 관리형 정책을 만든다. Lambda 실행 역할의 권한 경계로 쓰인다. 루트나 관리자 키로 배포하면 도구가 없을 때 직접 만든다.
+2. IAM 사용자를 만들고, [docs/iam/operator-policy.json](docs/iam/operator-policy.json)으로 고객 관리형 정책을 만들어 붙인다. 이 정책은 2,048자를 넘어 사용자 인라인 정책으로는 붙일 수 없다(고객 관리형 정책 한도는 6,144자). 이 정책으로는 권한 경계가 붙은 역할만 만들거나 바꿀 수 있어서, 역할 정책을 넓혀 계정 권한을 얻는 길이 막혀 있다.
+3. 이 PC에 프로필로 등록한다: `aws configure --profile mlops` 또는 `~/.aws/credentials`에 직접 적는다. 키는 저장소에 넣지 않는다.
+4. 리전과 이름은 [config/pipeline.json](config/pipeline.json)의 `cloud`에서, 메모리·제한 시간·동시 실행은 [config/lambda.json](config/lambda.json)에서 바꾼다. 함수, 역할, 버킷 접두어 이름을 바꾸면 [docs/iam/operator-policy.json](docs/iam/operator-policy.json)의 자원 이름도 같이 바꿔야 한다.
+5. S3 버킷, IAM 역할, 로그 그룹, Lambda 함수는 `deploy` 단계가 만든다. 버킷 이름은 `bike-demand-mlops-<리전>-<임의 8자리>`이고, 다음 실행부터는 같은 접두어의 버킷을 찾아 다시 쓴다.
 
 ## 6. 설치
 

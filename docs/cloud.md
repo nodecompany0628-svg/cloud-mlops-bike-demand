@@ -18,7 +18,7 @@
 1. `package`: 운영 담당자 PC에서 리눅스용 라이브러리로 zip(64MB)을 만든다.
 2. `deploy`: 배포 전 확인을 한 뒤 버킷, 역할, 로그 그룹을 준비하고 모델과 zip을 S3에 올린다. 함수를 만들거나 갱신하고 새 버전을 게시한다.
 3. Lambda는 콜드 스타트 때 S3에서 고정된 객체 버전의 모델을 한 번 받아 sha256과 입력 개수를 확인하고, 이후 요청은 메모리의 모델로 예측한다.
-4. `smoke`: 검사 사례 12개를 같은 실행에서 `deploy`가 게시한 버전에 보낸다(`smoke`만 따로 실행하면 가장 최근에 게시된 버전).
+4. `smoke`: 검사 사례 12개를 같은 실행에서 `deploy`가 게시한 버전에 보낸다(`smoke`만 따로 실행하면 가장 최근에 게시된 버전). 그 전에 정상 요청 1건을 보내, 새 역할 권한이 아직 반영되지 않아 모델 읽기가 403으로 실패하면 10초 간격으로 최대 6번 다시 보낸다. 기다린 횟수는 결과의 `readiness`에 남는다.
 5. `cloud-eval`: 평가 자료 2,888건을 같은 버전에 500건씩 보내 예측을 받고 로컬 결과와 비교한다.
 6. `release`: 그 버전이 smoke와 cloud-eval을 모두 통과했을 때만 `live` 별칭을 그 버전으로 옮긴다. 버전 번호만 보지 않고, 실행 기록에서 버전의 정체(리전, 리비전 ID, 코드 sha256, 모델 경로와 sha256)가 같은 smoke와 cloud-eval의 가장 최근 기록이 둘 다 성공인지 확인한다. 같은 버전을 다시 검사해 실패했다면 옮기지 않는다. 함수를 지웠다 다시 만들면 버전 번호가 1부터 다시 시작하므로 번호만으로는 같은 버전인지 알 수 없기 때문이다. 이전에 `live`가 가리키던 버전도 기록한다.
 7. 응답과 기록은 PC의 `results/`, `runs/`에 남기고 Git에 올린다. 함수 로그는 CloudWatch Logs에 남는다.
@@ -50,7 +50,7 @@
 
 `JOBLIB_MULTIPROCESSING=0`을 두는 이유: Lambda에는 /dev/shm이 없어 joblib을 불러올 때 경고가 난다. 예측은 한 프로세스에서 하므로 joblib 병렬 처리를 끈다.
 
-Lambda 실행 역할 `bike-demand-predict-role`의 권한은 두 가지뿐이다([bikeml/cloud.py](../bikeml/cloud.py)의 `role_policy`).
+Lambda 실행 역할 `bike-demand-predict-role`은 권한 경계 `bike-demand-predict-boundary`([docs/iam/lambda-boundary.json](iam/lambda-boundary.json))를 달고 만들어진다. 운영자 정책은 이 경계가 붙은 역할만 만들거나 인라인 정책을 바꿀 수 있게 조건을 걸었다. 그래서 운영자가 역할 정책에 넓은 권한을 넣고 Lambda 코드를 바꿔 실행하더라도, 실제 권한은 경계 안(로그 쓰기, 모델 읽기)을 넘지 못한다. 경계 정책은 관리자가 미리 만들고, 루트나 관리자 키로 배포하면 없을 때 도구가 만든다. 이미 있는 역할에 이 경계가 없으면 배포를 멈춘다. 역할의 인라인 정책 권한은 두 가지뿐이다([bikeml/cloud.py](../bikeml/cloud.py)의 `role_policy`).
 - 자기 로그 그룹에 로그 쓰기 (`logs:CreateLogStream`, `logs:PutLogEvents`)
 - 이 과제의 모든 버킷(`bike-demand-mlops-*`)의 `models/*` 읽기 (`s3:GetObject`, `s3:GetObjectVersion`). 지금 버킷만 허용하면, 버킷을 바꿔 배포할 때 아직 이전 버전을 가리키는 `live`가 모델을 못 읽게 되기 때문이다
 
@@ -60,7 +60,7 @@ Lambda 실행 역할 `bike-demand-predict-role`의 권한은 두 가지뿐이다
 
 1. 모델 파일의 sha256이 metadata.json과 같고, 정리한 자료가 설정의 분할 기간과 맞으며, 모델이 지금 학습 자료(`train.csv` sha256), 하이퍼파라미터, 버전, 특성 코드로 학습됐다.
 2. 이 모델로 `evaluate`를 통과한 기록(`results/evaluation/metrics.json`)이 있고, 그때의 합격 기준과 평가 자료 sha256이 지금 설정, 지금 파일과 같다.
-3. 이 모델로 `check-local`을 통과한 기록(`results/service_check/local.json`)이 있고, 그때의 Lambda 코드 해시가 지금 코드와 같다.
+3. 이 모델로 `check-local`을 통과한 기록(`results/service_check/local.json`)이 있고, 그때의 Lambda 코드 해시와 검사 사례 파일(`samples/service_cases.json`) 해시가 지금과 같다.
 4. `build/lambda_package.zip`의 해시가 `results/cloud/package.json`과 같다.
 5. zip에 넣은 Lambda 코드와 `requirements-lambda.txt`가 지금 파일과 같고, zip의 런타임과 아키텍처가 Lambda 설정과 같다.
 
@@ -81,7 +81,7 @@ Lambda 실행 역할 `bike-demand-predict-role`의 권한은 두 가지뿐이다
 
 Lambda는 S3에서 받은 코드의 사본을 따로 보관한다(기본 저장 방식). 그래서 수명 주기 규칙으로 `packages/`의 zip이 지워져도 배포된 함수에는 영향이 없다.
 
-`deploy`는 자원을 만들기 전에 계정과 리전을 `.state/regions.json`(Git 제외)에 적는다. 계정 ID는 그대로 적지 않고, 이 PC에서 만든 임의 키(`.state/local_key`, Git 제외)로 HMAC-SHA256을 계산한 값만 적는다. `status`와 `cleanup`은 지금 리전, 이 PC에서 같은 계정으로 배포를 시작했던 리전(`.state/regions.json`, Git 제외), 실행 기록(`runs/run_log.jsonl`)에 남은 모든 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전, 이 계정에 있는 `bike-demand-mlops-<리전>-<8자리>` 버킷 이름에 든 리전을 모두 조회하고 정리한다. `.state/`가 없는 새 폴더에서도 버킷 이름과 실행 기록으로 다른 리전을 찾기 위해서다. 다른 계정의 배포 기록이 남아 있으면 `cleanup`은 실패로 기록하고 그 계정의 프로필로 다시 실행하라고 알린다. 켜지 않은 리전처럼 인증 오류(`InvalidClientTokenId` 등)로 접속할 수 없는 리전은 `regions_unreachable`에 남기고 건너뛴다. 그 밖의 이유(일시적인 네트워크나 권한 오류)로 접속하지 못한 리전이 있으면 정리를 실패로 기록하고 IAM 역할도 남긴다. 실행 기록과 배포 기록에 남은 버킷 이름도 조회와 정리에 넣는다. 배포는 버킷을 준비하자마자 실행 기록에 버킷 이름을 남기므로, 배포가 중간에 실패했거나 설정에서 `cloud.bucket`을 지운 뒤에도 그 버킷을 찾는다. 다른 계정의 버킷이라 위치를 조회할 수 없으면 건너뛴다. 버킷 이름에서 리전을 뽑을 때는 실제 AWS 리전 목록에 있는 이름만 쓴다. 실행 기록에 빈 줄은 건너뛰고, 읽을 수 없는 줄이 있으면 `release`는 검사 결과를 확인할 수 없으므로 멈춘다. IAM 역할은 리전과 상관없는 자원이라, 모든 리전의 지역 자원이 지워졌을 때만 마지막에 지우고, 역할의 인라인 정책은 리전마다 따로 둔다.
+`deploy`는 자원을 만들기 전에 계정과 리전을 `.state/regions.json`(Git 제외)에 적는다. 계정 ID는 그대로 적지 않고, 이 PC에서 만든 임의 키(`.state/local_key`, Git 제외)로 HMAC-SHA256을 계산한 값만 적는다. `status`와 `cleanup`은 지금 리전, 이 PC에서 같은 계정으로 배포를 시작했던 리전(`.state/regions.json`, Git 제외), 실행 기록(`runs/run_log.jsonl`)에 남은 모든 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전, 이 계정에 있는 `bike-demand-mlops-<리전>-<8자리>` 버킷 이름에 든 리전을 모두 조회하고 정리한다. `.state/`가 없는 새 폴더에서도 버킷 이름과 실행 기록으로 다른 리전을 찾기 위해서다. 다른 계정의 배포 기록이 남아 있으면 `cleanup`은 실패로 기록하고 그 계정의 프로필로 다시 실행하라고 알린다. `status`도 상태를 확인하지 못한 자원(`exists: null`)이나 접속하지 못한 리전이 있으면 결과 파일을 남긴 뒤 실패로 기록한다. 켜지 않은 리전처럼 인증 오류(`InvalidClientTokenId` 등)로 접속할 수 없는 리전은 `regions_unreachable`에 남기고 건너뛴다. 그 밖의 이유(일시적인 네트워크나 권한 오류)로 접속하지 못한 리전이 있으면 정리를 실패로 기록하고 IAM 역할도 남긴다. 실행 기록과 배포 기록에 남은 버킷 이름도 조회와 정리에 넣는다. 배포는 버킷 이름을 정하자마자 그 단계의 기록에 넣어 두므로, 배포가 중간에 실패했거나 설정에서 `cloud.bucket`을 지운 뒤에도 그 버킷을 찾는다(기록은 단계가 끝날 때 쓰이므로 프로세스가 강제로 죽으면 남지 않는다. 이때 자동 이름 버킷은 이름 형식으로 찾는다). 다른 계정의 버킷이라 위치를 조회할 수 없으면 건너뛴다. 버킷 이름에서 리전을 뽑을 때는 실제 AWS 리전 목록에 있는 이름만 쓴다. 실행 기록에 빈 줄은 건너뛰고, 읽을 수 없는 줄이 있으면 `release`는 검사 결과를 확인할 수 없으므로 멈춘다. IAM 역할은 리전과 상관없는 자원이라, 모든 리전의 지역 자원이 지워졌을 때만 마지막에 지우고, 역할의 인라인 정책은 리전마다 따로 둔다.
 
 공개 저장소에 계정 정보가 남지 않게 했다([bikeml/runlog.py](../bikeml/runlog.py)의 `sanitize`).
 - 버킷 이름에는 계정 ID 대신 임의 문자열을 넣는다. 다음 실행부터는 같은 접두어의 버킷을 목록에서 찾아 쓴다.
@@ -135,10 +135,10 @@ python -m bikeml --config config/demo_strict_criteria.json run evaluate check-lo
 
 | 항목 | 결과 |
 |---|---|
-| run_id | `20261120T002028-c43962` (코드 커밋 `fb67798`에서 실행. 그 뒤 평가 코드는 바뀌지 않았다) |
+| run_id | `20261120T015410-0913c9` |
 | evaluate | failed. `RuntimeError: 합격 기준 미달: {'beats_all_baselines': True, 'mae_reduction_vs_hour_baseline': 0.499, 'meets_reduction': False}` |
 | check-local | skipped (`이전 단계 실패로 실행하지 않음: evaluate`) |
-| 실패한 결과 | `results/failed/20261120T002028-c43962_evaluate/` (metrics.json의 `passed: false`, error.txt) |
+| 실패한 결과 | `results/failed/20261120T015410-0913c9_evaluate/` (metrics.json의 `passed: false`, error.txt) |
 | 정상 결과 | `results/evaluation/metrics.json`은 그대로 (`passed: true`, 기준 0.3). 후보 모델은 `models/hgb-v1/`로 옮겨지지 않았다 |
 | 배포 | 정상 설정으로는 배포 전 확인을 통과한다. 엄격한 설정으로 `deploy`를 실행하면 "evaluate 이후 합격 기준이나 평가 자료가 바뀜"으로 멈춘다 |
 

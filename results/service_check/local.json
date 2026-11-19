@@ -36,7 +36,7 @@
         }
       ],
       "meta": {
-        "client_ms": 80.4
+        "client_ms": 70.3
       }
     },
     {
@@ -69,7 +69,7 @@
         }
       ],
       "meta": {
-        "client_ms": 6.0
+        "client_ms": 7.0
       }
     },
     {
@@ -96,7 +96,7 @@
         }
       ],
       "meta": {
-        "client_ms": 5.1
+        "client_ms": 8.2
       }
     },
     {
@@ -122,7 +122,7 @@
         }
       ],
       "meta": {
-        "client_ms": 5.1
+        "client_ms": 7.7
       }
     },
     {
@@ -332,6 +332,7 @@
     "bikeml/features.py": "145013ee8e1cc9cb38a4f6071d896fcd9a652dab011d2072f41d96d8b7d0bc51",
     "bikeml/service.py": "bb1e261b7f1ea5b3dc0ff15cb26e20a7e7fa2a807bfea5ef42cf386c1584305b"
   },
+  "cases_sha256": "73176842db61633dd25086e75c802d938d92a83683ad7889b102c39096a3bbf4",
   "sample_day": {
     "day": "2012-12-03",
     "mae": 34.75,
