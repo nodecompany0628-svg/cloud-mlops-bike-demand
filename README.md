@@ -5,7 +5,7 @@
 진행 상태 (2026-11-19)
 
 - 실행함: 데이터 받기와 점검, 분할, 학습, 평가, 로컬 서비스 검사, 테스트, Lambda 배포 패키지 빌드, 실패 처리 예시(엄격한 합격 기준으로 평가 실패)
-- 모의 AWS(moto)로만 확인함: 자원 생성과 배포, 버전 게시, 상태 조회, 정리 흐름. 이 테스트에서는 배포 전 확인을 대체하고, 작은 가짜 zip을 올리고, Lambda 호출을 로컬 핸들러로 대신한다.
+- 모의 AWS(moto)로만 확인함: 자원 생성과 배포, 버전 게시, `live` 별칭, 상태 조회, 정리 흐름. 이 테스트에서는 배포 전 확인을 대체하고, 작은 가짜 zip을 올리고, Lambda 호출을 로컬 핸들러로 대신한다.
 - 실행 전: 실제 AWS 배포와 클라우드 검사·평가, 클라우드 오류 재현과 복구, 새 폴더 재실행(클라우드 포함), 자원 정리. AWS 계정이 준비되면 실행하고 이 문서와 [docs/cloud.md](docs/cloud.md), [docs/operations.md](docs/operations.md)를 채운다.
 
 ## 1. 서비스
@@ -51,12 +51,12 @@ python -m bikeml cleanup     AWS 자원 삭제 후 다시 조회
 |---|---|
 | fetch | UCI에서 원자료를 받고 sha256 확인 (이미 있으면 확인만) |
 | prepare | 원자료 점검, 단위 변환, 결측 처리, 시간 순서 분할 |
-| train | 모델 학습, 모델 파일과 메타데이터 저장 |
-| evaluate | 기준 방법과 비교, 합격 기준 확인 (불합격이면 멈춤) |
+| train | 모델 학습. 결과는 후보 폴더 `models/_candidate/`에 둔다 |
+| evaluate | 기준 방법과 비교, 합격 기준 확인. 합격하면 후보 모델을 `models/hgb-v1/`로 옮기고, 불합격이면 멈춘다 |
 | check-local | 서비스 검사 사례 12개를 Lambda 핸들러에 로컬로 보냄 |
 | package | 리눅스용 라이브러리로 Lambda zip 빌드 |
 | deploy | 평가와 검사가 현재 모델, 기준, 코드로 통과했는지와 zip이 현재 코드로 만든 것인지 확인한 뒤 S3, IAM 역할, 로그 그룹, Lambda 함수를 만들고 버전 게시 |
-| smoke | 같은 검사 사례 12개를 Lambda에 보냄 |
+| smoke | 같은 검사 사례 12개를 Lambda에 보내고, 모두 통과하면 그 버전에 `live` 별칭을 붙임 |
 | cloud-eval | 평가 자료 2,888건을 Lambda로 예측해 로컬 결과와 비교 |
 
 | 폴더 | 내용 |
@@ -65,7 +65,7 @@ python -m bikeml cleanup     AWS 자원 삭제 후 다시 조회
 | [lambda_src/lambda_function.py](lambda_src/lambda_function.py) | Lambda 진입점. S3에서 모델을 받아 sha256과 입력 개수를 확인한 뒤 예측 |
 | [config/](config/) | 파이프라인 설정, Lambda 설정, 실패 예시용 설정(`demo_strict_criteria.json`) |
 | [data/](data/) | 원자료(`raw/`), 정리·분할한 자료(`processed/`), 출처 표기([data/README.md](data/README.md)) |
-| [models/hgb-v1/](models/hgb-v1/) | 학습한 모델과 메타데이터 |
+| [models/hgb-v1/](models/hgb-v1/) | 평가를 통과한 모델과 메타데이터 (후보 폴더 `models/_candidate/`는 Git 제외) |
 | [samples/](samples/) | 서비스 검사 사례, 예시 요청 |
 | [results/](results/) | 평가, 서비스 검사, 클라우드 기록. 실패한 실행은 `results/failed/` |
 | [runs/run_log.jsonl](runs/run_log.jsonl) | 단계별 실행 기록 |
@@ -80,7 +80,7 @@ python -m bikeml cleanup     AWS 자원 삭제 후 다시 조회
 | 기준 방법 MAE | 시간대 평균 94.78, 전체 평균 170.51 대/시간. 시간대 평균보다 49.9% 낮아 합격 | 같은 파일 |
 | 서비스 검사 (로컬 핸들러) | 12/12 통과 | [results/service_check/local.json](results/service_check/local.json) |
 | 실패 처리 예시 | 합격 기준을 90%로 올린 설정에서 evaluate 실패, check-local 건너뜀, 정상 결과는 그대로 | [results/failed/](results/failed/), [runs/run_log.jsonl](runs/run_log.jsonl) |
-| 테스트 | 59개 통과 | `python -m pytest -q` |
+| 테스트 | 64개 통과 | `python -m pytest -q` |
 | Lambda 패키지 | zip 64.29MB, 압축 해제 198.94MB (한도 250MB) | [results/cloud/package.json](results/cloud/package.json) |
 | 실제 AWS 실행 | 실행 전 | [docs/cloud.md](docs/cloud.md) |
 
@@ -141,15 +141,16 @@ python -m bikeml runs
 ```
 
 - 전체 옵션 `--config`, `--profile`, `--region`, `--lambda-config`는 `run`, `status`, `cleanup`, `runs` 앞에 쓴다.
+- `status`, `cleanup`은 마지막으로 배포한 리전(`results/cloud/deploy.json`)과 다른 리전으로 실행하면 멈춘다. 다른 리전에 배포했다면 같은 `--region`을 붙인다.
 - 단계 하나씩도 실행할 수 있다: `python -m bikeml run evaluate`, `python -m bikeml --profile mlops run deploy smoke`
 - 한 단계가 실패하면 뒤 단계는 실행하지 않고, 실패한 결과는 `results/failed/<run_id>_<단계>/`에 따로 남는다. 실행 중 Ctrl+C로 멈춰도 그 단계는 실패로 기록된다.
 - 실패 처리 예시 재현: `python -m bikeml --config config/demo_strict_criteria.json run evaluate check-local`
 - `deploy`는 현재 모델과 합격 기준, 평가 자료로 `evaluate`를 통과했고, 현재 Lambda 코드로 `check-local`을 통과했으며, zip이 현재 코드로 만든 것일 때만 진행한다.
 
-AWS CLI로 직접 호출하는 방법
+AWS CLI로 직접 호출하는 방법. 검사를 통과한 버전을 가리키는 `live` 별칭으로 부른다.
 
 ```
-aws lambda invoke --function-name bike-demand-predict --region ap-northeast-2 --profile mlops --cli-binary-format raw-in-base64-out --payload file://samples/generated/request_2012-12-03.json out.json
+aws lambda invoke --function-name bike-demand-predict --qualifier live --region ap-northeast-2 --profile mlops --cli-binary-format raw-in-base64-out --payload file://samples/generated/request_2012-12-03.json out.json
 ```
 
 ## 8. 결과 파일 위치

@@ -31,8 +31,8 @@
     "windspeed_zero_kept": 2180
   },
   "excluded_columns": {
-    "casual, registered": "합이 정답(cnt)과 같음 -> 정답 누출",
-    "instant": "행 번호(시간 순서) -> 서비스 입력에 없음",
+    "casual, registered": "둘을 더하면 정답(cnt)이라 정답이 새어 들어감",
+    "instant": "시간 순서를 나타내는 행 번호이고 서비스 입력에 없음",
     "season": "월(mnth)로 대신함, 원자료 정의(1=봄)가 실제 달력과 어긋남",
     "dteday, yr, mnth, weekday, workingday": "요청의 datetime, holiday 로 다시 계산(원자료 값과 일치 확인)"
   },

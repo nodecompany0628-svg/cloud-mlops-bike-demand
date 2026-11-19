@@ -30,7 +30,7 @@ LAMBDA_TRUST = {
 NOT_FOUND = {"404", "NoSuchBucket", "NotFound", "ResourceNotFoundException", "NoSuchEntity"}
 STATUS_RETRIES = 10
 STATUS_WAIT_S = 3
-UPLOAD_RETRIES = 20
+UPLOAD_RETRIES = 30
 UPLOAD_WAIT_S = 30
 ALIAS = "live"
 

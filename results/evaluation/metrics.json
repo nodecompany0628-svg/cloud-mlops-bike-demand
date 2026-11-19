@@ -4,6 +4,7 @@
     "version": "hgb-v1",
     "sha256": "9911f56a01c312600ac0ce5101e811299274debd19ad6d077f2e6b8e090d47dd"
   },
+  "model_source": "candidate",
   "eval_data": {
     "path": "data/processed/test.csv",
     "sha256": "e634352180e336bcd3fbd1d819e624dd8e9ff5b2598681a594d21fa4b69691ba",

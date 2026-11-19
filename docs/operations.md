@@ -17,14 +17,14 @@
 | 주체 | 대상 | 권한 |
 |---|---|---|
 | 운영자 (배포와 정리를 실행하는 사람) | 이 과제의 버킷, 역할, 함수, 로그 그룹 | [docs/iam/operator-policy.json](iam/operator-policy.json). 자원 이름을 `bike-demand-*`로 좁혔다. 버킷 목록 조회(`s3:ListAllMyBuckets`)와 로그 그룹 목록 조회만 계정 전체가 대상이다 |
-| Lambda 실행 역할 `bike-demand-predict-role` | 자기 로그 그룹, 버킷의 `models/*` | 로그 쓰기, `s3:GetObject`만 |
-| 호출하는 사람 | 함수 `bike-demand-predict` | `lambda:InvokeFunction`. 공개 주소는 만들지 않는다 |
+| Lambda 실행 역할 `bike-demand-predict-role` | 자기 로그 그룹, 버킷의 `models/*` | 로그 쓰기, `s3:GetObject`, `s3:GetObjectVersion`만 |
+| 호출하는 사람 | 함수 `bike-demand-predict`의 `live` 별칭 | `lambda:InvokeFunction`. 공개 주소는 만들지 않는다 |
 
 - 버킷은 공개 접근 차단 4가지를 모두 켠다.
 - `iam:PassRole`은 Lambda에 넘길 때만 허용한다(`iam:PassedToService` 조건).
 - 자격 증명은 로컬 AWS 프로필(`~/.aws/credentials`)에만 두고 코드, 설정, 기록, Git에는 넣지 않는다. 실행할 때 `--profile`이나 `AWS_PROFILE`로 고른다. 지정하지 않으면 클라우드 단계는 AWS에 접속하기 전에 멈춘다. 환경 변수의 키를 쓰려면 `BIKEML_USE_ENV_CREDENTIALS=1`을 함께 지정해야 한다.
 - 루트 계정 키보다 위 정책을 붙인 IAM 사용자 키를 쓰는 편이 안전하다.
-- 기존 자원이나 계정 보안 설정은 바꾸지 않는다. 새로 만드는 자원 4개에만 태그 `project=cloud-mlops-assignment`를 붙인다.
+- 기존 자원이나 계정 보안 설정은 바꾸지 않는다. 새로 만드는 자원 4개에만 태그 `project=cloud-mlops-assignment`, `owner=student`를 붙인다. 이름이 `bike-demand-mlops-`로 시작해도 이 태그가 없는 버킷은 배포와 정리에서 건드리지 않고 멈춘다.
 
 ## 3. 비용이 생기는 자원과 제한 방법
 
@@ -45,7 +45,7 @@ AWS Budgets 경보는 알림 받을 이메일이 필요해서 스크립트로 �
 
 실행 전이다. `python -m bikeml --profile <프로필> cleanup`이 하는 일은 다음과 같다.
 
-1. 정리 전 상태를 조회한다.
+1. 마지막 배포 리전(`results/cloud/deploy.json`)과 지금 리전이 같은지 확인하고, 정리 전 상태를 조회한다.
 2. Lambda 함수(모든 버전 포함), 로그 그룹, IAM 역할(인라인 정책 먼저), S3 버킷(모든 객체 버전과 삭제 표시 먼저)을 차례로 삭제한다.
 3. 다시 조회해서 4개 자원이 모두 없는지 확인한다. IAM은 반영이 늦을 수 있어 3초 간격으로 최대 10번 다시 본다.
 4. 하나라도 남거나, 권한 오류 등으로 상태를 확인하지 못하면 실패로 기록한다.

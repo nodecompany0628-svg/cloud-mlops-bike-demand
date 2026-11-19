@@ -1,6 +1,6 @@
 {
   "zip": "build/lambda_package.zip",
-  "zip_sha256": "4a884fd4ee79adb7146a8a13f315a539891d999a47b720fe52eb1fdcac52e50e",
+  "zip_sha256": "2ba295dbc3195619b1295c56103b6566496381023705504bab7f4f8d69e9f6f4",
   "zip_mb": 64.29,
   "unzipped_mb": 198.94,
   "removed_test_dirs_mb": 30.06,
