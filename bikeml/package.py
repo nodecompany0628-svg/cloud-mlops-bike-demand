@@ -46,7 +46,13 @@ def build_package(lambda_cfg: dict) -> dict:
     subprocess.run(cmd, check=True)
 
     # 실행에 쓰지 않는 테스트 폴더와 캐시는 뺀다(크기 줄이기).
-    removed = 0
+    # bin/ 에는 pip 가 만든 Windows 실행 파일(f2py.exe 등)이 들어가는데,
+    # Lambda 에서 쓸 수 없고 빌드할 때마다 내용이 달라져 zip 해시가 바뀌므로 뺀다.
+    removed = _dir_size(PKG_DIR / "bin") if (PKG_DIR / "bin").exists() else 0
+    shutil.rmtree(PKG_DIR / "bin", ignore_errors=True)
+    for record in PKG_DIR.glob("*.dist-info/RECORD"):  # 지운 bin/ 파일의 해시 줄도 뺀다
+        lines = record.read_text(encoding="utf-8").splitlines(keepends=True)
+        record.write_text("".join(l for l in lines if not l.startswith("../../bin/")), encoding="utf-8", newline="")
     for d in sorted(PKG_DIR.rglob("*"), reverse=True):
         if d.is_dir() and d.name in ("tests", "__pycache__"):
             removed += _dir_size(d)
