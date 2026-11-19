@@ -27,7 +27,7 @@
 |---|---|
 | AWS Lambda | 운영 담당자가 하루 한두 번 다음 날 24시간 예보를 넣어 호출하는 용도다. 상시 서버나 화면이 필요 없고, 호출할 때만 실행되어 요청이 없으면 비용이 없다. 모델이 0.7MB로 작아 함수 하나로 충분하다. Lambda에서의 실제 처리 시간과 메모리 사용량은 배포 후 REPORT 로그로 기록한다 |
 | 직접 호출 (`lambda:InvokeFunction`), 공개 주소 없음 | 사용자가 담당자 몇 명뿐이라 공개 HTTP 주소를 열 이유가 없다. IAM 권한이 있는 사람만 호출할 수 있어 인증을 따로 만들지 않았다 |
-| `live` 별칭 | 사용자는 `live`로 호출한다. `live`는 smoke와 cloud-eval을 모두 통과한 버전만 가리키므로, 배포나 검사 도중 실패해 `$LATEST`나 새 버전이 어중간한 상태여도 사용자 호출에는 영향이 없다 |
+| `live` 별칭 | 사용자는 `live`로 호출한다. `live`는 smoke와 cloud-eval을 모두 통과한 버전만 가리키므로, 배포나 검사 도중 실패해 `$LATEST`나 새 버전이 어중간한 상태여도 사용자 호출이 검사하지 않은 버전으로 가지 않는다. 다만 예약 동시성(2)과 메모리, 제한 시간 같은 함수 수준 설정은 모든 버전이 함께 쓰므로, 검사 중에는 `live` 호출과 동시 실행 자리를 나눠 쓰고, 예약 동시성 변경은 `live`에도 바로 적용된다 |
 | 모델은 S3에 두고 실행할 때 내려받음 | 모델 버전을 코드 패키지와 따로 관리한다. 모델 경로에 모델 sha256 앞 12자리를 넣어(`models/hgb-v1/<sha12>/model.joblib`) 내용이 다른 모델은 다른 객체가 되게 하고, Lambda 환경 변수 `MODEL_URI`에 S3 객체 버전 ID까지 적는다(`...model.joblib?versionId=...`). 그래서 다시 학습해 올려도 이미 게시한 Lambda 버전이나 `live`가 가리키는 모델 파일은 덮이거나 수명 주기 규칙으로 지워지지 않는다 |
 | 같은 파일은 다시 올리지 않음 | 업로드 전에 S3의 현재 객체에 적힌 sha256을 보고, 같으면 그 객체 버전을 그대로 쓴다. 함수 설정의 설명은 고정 문구이고 커밋 정보는 버전 설명에만 넣는다. 그래서 모델, 코드, 설정이 그대로면 Lambda 설정도 그대로다. 이 경우 AWS 문서에 따르면 PublishVersion은 새 번호를 만들지 않고 기존 번호를 돌려주며, 버전 설명은 처음 게시할 때의 커밋으로 남는다. 이번 배포의 커밋은 `deploy.json`과 실행 기록에 남는다. 이 동작은 실제 AWS에서 확인할 부분이다(moto는 매번 새 번호를 만든다) |
 | 버전 관리 반영 대기 | AWS 문서는 버킷에서 버전 관리를 처음 켠 뒤 반영에 최대 15분이 걸릴 수 있다고 한다. 업로드 결과에 객체 버전이 없거나 그 버전을 읽지 못하면 30초 간격으로 최대 30번(15분) 다시 올린다 |
@@ -42,7 +42,7 @@
 
 | 파일 | 내용 |
 |---|---|
-| [config/pipeline.json](../config/pipeline.json) | 리전, 함수와 역할 이름, 버킷 접두어, 태그, 분할 기간, 학습 스레드 수, 하이퍼파라미터, 합격 기준. `cloud.bucket`을 적으면 그 버킷을 쓴다(이름이 `bike-demand-mlops-`로 시작하고 이 과제의 태그가 있어야 함) |
+| [config/pipeline.json](../config/pipeline.json) | 리전, 함수와 역할 이름, 버킷 접두어, 태그, 분할 기간, 학습 스레드 수, 하이퍼파라미터, 합격 기준. `cloud.bucket`을 적으면 그 버킷을 쓴다(이름이 `bike-demand-mlops-`로 시작하고, 이 과제의 태그가 있고, 지금 리전에 있어야 함. 없으면 그 이름으로 만든다). 이때도 자동으로 만든 버킷은 조회와 정리에 포함된다 |
 | [config/lambda.json](../config/lambda.json) | 런타임, 메모리, 제한 시간, 임시 저장소, 예약 동시성, 로그 보관 일수 |
 | Lambda 환경 변수 | `MODEL_URI`(S3 경로와 객체 버전), `MODEL_VERSION`, `MODEL_SHA256`, `JOBLIB_MULTIPROCESSING=0` |
 
@@ -81,7 +81,7 @@ Lambda 실행 역할 `bike-demand-predict-role`의 권한은 두 가지뿐이다
 
 Lambda는 S3에서 받은 코드의 사본을 따로 보관한다(기본 저장 방식). 그래서 수명 주기 규칙으로 `packages/`의 zip이 지워져도 배포된 함수에는 영향이 없다.
 
-`deploy`는 자원을 만들기 전에 계정과 리전을 `.state/regions.json`(Git 제외)에 적는다. 계정 ID는 그대로 적지 않고, 이 PC에서 만든 임의 키(`.state/local_key`, Git 제외)로 HMAC-SHA256을 계산한 값만 적는다. `status`와 `cleanup`은 지금 리전, 이 파일에서 같은 계정의 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전을 모두 조회하고 정리한다. 다른 계정의 배포 기록이 남아 있으면 `cleanup`은 실패로 기록하고 그 계정의 프로필로 다시 실행하라고 알린다. 다른 리전에서 배포하다 중간에 실패해 남은 자원도 놓치지 않기 위해서다. IAM 역할은 리전과 상관없는 자원이라 모든 리전을 정리한 뒤 마지막에 지우고, 역할의 인라인 정책은 리전마다 따로 둔다.
+`deploy`는 자원을 만들기 전에 계정과 리전을 `.state/regions.json`(Git 제외)에 적는다. 계정 ID는 그대로 적지 않고, 이 PC에서 만든 임의 키(`.state/local_key`, Git 제외)로 HMAC-SHA256을 계산한 값만 적는다. `status`와 `cleanup`은 지금 리전, 이 PC에서 같은 계정으로 배포를 시작했던 리전(`.state/regions.json`, Git 제외), 실행 기록(`runs/run_log.jsonl`)에 남은 모든 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전, 이 계정에 있는 `bike-demand-mlops-<리전>-<8자리>` 버킷 이름에 든 리전을 모두 조회하고 정리한다. `.state/`가 없는 새 폴더에서도 버킷 이름과 실행 기록으로 다른 리전을 찾기 위해서다. 다른 계정의 배포 기록이 남아 있으면 `cleanup`은 실패로 기록하고 그 계정의 프로필로 다시 실행하라고 알린다. IAM 역할은 리전과 상관없는 자원이라, 모든 리전의 지역 자원이 지워졌을 때만 마지막에 지우고, 역할의 인라인 정책은 리전마다 따로 둔다.
 
 공개 저장소에 계정 정보가 남지 않게 했다([bikeml/runlog.py](../bikeml/runlog.py)의 `sanitize`).
 - 버킷 이름에는 계정 ID 대신 임의 문자열을 넣는다. 다음 실행부터는 같은 접두어의 버킷을 목록에서 찾아 쓴다.
@@ -90,7 +90,8 @@ Lambda는 S3에서 받은 코드의 사본을 따로 보관한다(기본 저장 
   - 계정 ID는 `<ACCOUNT_ID>`로 바꾼다.
   - 저장소 경로는 `<REPO>`, 홈 폴더 경로는 `~`로 바꾼다.
   - 그 밖의 `Users\이름`은 `<USER>`로 바꾼다.
-  - AWS 오류 메시지 속 IAM 사용자나 세션 이름(`user/이름`, `assumed-role/...`)은 `<NAME>`으로 바꾼다.
+  - AWS 오류 메시지 속 IAM 사용자나 세션 이름(`user/이름`, `assumed-role/...`)은 `<NAME>`으로, ARN 속 12자리 계정 ID는 `<ACCOUNT_ID>`로 바꾼다. 계정 ID를 알기 전에 난 오류도 마찬가지다.
+  - 쓰고 있는 AWS 프로필 이름은 `<PROFILE>`로 바꾼다. 실행 인자의 `profile`도 이름 대신 `<PROFILE>`로 남긴다.
 
 ## 3. 실제 입력에서 결과까지 (실행 결과)
 
@@ -134,14 +135,14 @@ python -m bikeml --config config/demo_strict_criteria.json run evaluate check-lo
 
 | 항목 | 결과 |
 |---|---|
-| run_id | `20261119T235655-4177b4` |
+| run_id | `20261120T002028-c43962` |
 | evaluate | failed. `RuntimeError: 합격 기준 미달: {'beats_all_baselines': True, 'mae_reduction_vs_hour_baseline': 0.499, 'meets_reduction': False}` |
 | check-local | skipped (`이전 단계 실패로 실행하지 않음: evaluate`) |
-| 실패한 결과 | `results/failed/20261119T235655-4177b4_evaluate/` (metrics.json의 `passed: false`, error.txt) |
+| 실패한 결과 | `results/failed/20261120T002028-c43962_evaluate/` (metrics.json의 `passed: false`, error.txt) |
 | 정상 결과 | `results/evaluation/metrics.json`은 그대로 (`passed: true`, 기준 0.3). 후보 모델은 `models/hgb-v1/`로 옮겨지지 않았다 |
 | 배포 | 정상 설정으로는 배포 전 확인을 통과한다. 엄격한 설정으로 `deploy`를 실행하면 "evaluate 이후 합격 기준이나 평가 자료가 바뀜"으로 멈춘다 |
 
-같은 설정으로 이전 코드에서 실행한 기록(`20261119T212432-8dab61`, `20261119T215025-2b3b55`, `20261119T221433-76275e`, `20261119T223856-cfa909`, `20261119T230144-db75ff`, `20261119T232843-0c4694`, `20261119T235636-890eb9`)도 `results/failed/`에 남아 있다. 마지막 것은 테스트 파일을 고치고 커밋하기 전에 실행해 `code_dirty: true`로 기록된 것이다.
+같은 예시를 검토하며 코드를 고칠 때마다 다시 실행했기 때문에, 이전 코드로 실행한 실패 기록도 `results/failed/`에 남아 있다. 그중 하나(`20261119T235636-890eb9`)는 테스트 파일을 커밋하기 전에 실행해 `code_dirty: true`로 기록되어 있다.
 
 ## 5. 오류 재현과 복구
 

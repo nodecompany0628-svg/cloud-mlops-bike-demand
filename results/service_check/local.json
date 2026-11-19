@@ -36,7 +36,7 @@
         }
       ],
       "meta": {
-        "client_ms": 55.3
+        "client_ms": 62.1
       }
     },
     {
@@ -69,7 +69,7 @@
         }
       ],
       "meta": {
-        "client_ms": 5.9
+        "client_ms": 4.3
       }
     },
     {
@@ -96,7 +96,7 @@
         }
       ],
       "meta": {
-        "client_ms": 4.5
+        "client_ms": 5.9
       }
     },
     {
@@ -122,7 +122,7 @@
         }
       ],
       "meta": {
-        "client_ms": 4.4
+        "client_ms": 7.1
       }
     },
     {
@@ -327,7 +327,7 @@
     }
   ],
   "app_files": {
-    "lambda_function.py": "c51d997a3c947bcfab5576474bc9b3a2bc38c7452c192c64fa2184eed1ec1ed8",
+    "lambda_function.py": "5e8903974aabae6843cc75760c03bef0b3b35d5e10bd0e9db791fa15cf14f52f",
     "bikeml/__init__.py": "27e8febb48ada44153ea2add9969a2c50a9831a74d9755fdd53c549a888b1cc2",
     "bikeml/features.py": "145013ee8e1cc9cb38a4f6071d896fcd9a652dab011d2072f41d96d8b7d0bc51",
     "bikeml/service.py": "bb1e261b7f1ea5b3dc0ff15cb26e20a7e7fa2a807bfea5ef42cf386c1584305b"

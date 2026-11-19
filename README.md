@@ -81,7 +81,7 @@
 | 기준 방법 MAE | 시간대 평균 94.78, 전체 평균 170.51 대/시간. 시간대 평균보다 49.9% 낮아 합격 | 같은 파일 |
 | 서비스 검사 (로컬 핸들러) | 12/12 통과 | [results/service_check/local.json](results/service_check/local.json) |
 | 실패 처리 예시 | 합격 기준을 90%로 올린 설정에서 evaluate 실패, check-local 건너뜀, 정상 결과는 그대로 | [results/failed/](results/failed/), [runs/run_log.jsonl](runs/run_log.jsonl) |
-| 테스트 | 87개 통과 | `python -m pytest -q` |
+| 테스트 | 91개 통과 | `python -m pytest -q` |
 | Lambda 패키지 | zip 64.29MB, 압축 해제 198.94MB (한도 250MB) | [results/cloud/package.json](results/cloud/package.json) |
 | 실제 AWS 실행 | 실행 전 | [docs/cloud.md](docs/cloud.md) |
 
@@ -142,7 +142,7 @@ python -m bikeml runs
 ```
 
 - 전체 옵션 `--config`, `--profile`, `--region`, `--lambda-config`는 `run`, `status`, `cleanup`, `runs` 앞에 쓴다.
-- `status`, `cleanup`은 지금 리전뿐 아니라 이 PC에서 같은 계정으로 배포를 시작했던 모든 리전(`.state/regions.json`, Git 제외)과 배포 기록에 적힌 리전을 함께 조회하고 정리한다. 다른 계정으로 배포한 기록이 남아 있으면 `cleanup`은 이 계정의 자원을 지운 뒤에도 실패로 기록하고, 그 계정의 프로필로 다시 실행하라고 알린다.
+- `status`, `cleanup`은 지금 리전, 이 PC에서 같은 계정으로 배포를 시작했던 리전(`.state/regions.json`, Git 제외), 실행 기록(`runs/run_log.jsonl`)에 남은 모든 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전, 이 계정에 있는 `bike-demand-mlops-<리전>-<8자리>` 버킷 이름에 든 리전을 모두 조회하고 정리한다. 그래서 `.state/`가 없는 새 폴더에서 실행해도 다른 리전에 남은 자원을 찾는다. 다른 계정으로 배포한 기록이 남아 있으면 `cleanup`은 이 계정의 자원을 지운 뒤에도 실패로 기록하고, 그 계정의 프로필로 다시 실행하라고 알린다.
 - 단계 하나씩도 실행할 수 있다: `python -m bikeml run evaluate`, `python -m bikeml --profile mlops run deploy smoke`
 - 한 단계가 실패하면 뒤 단계는 실행하지 않고, 실패한 결과는 `results/failed/<run_id>_<단계>/`에 따로 남는다. 실행 중 Ctrl+C로 멈춰도 그 단계는 실패로 기록된다.
 - 실패 처리 예시 재현: `python -m bikeml --config config/demo_strict_criteria.json run evaluate check-local`

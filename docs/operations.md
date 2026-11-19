@@ -45,11 +45,11 @@ AWS Budgets 경보는 알림 받을 이메일이 필요해서 스크립트로 �
 
 실행 전이다. `python -m bikeml --profile <프로필> cleanup`이 하는 일은 다음과 같다.
 
-1. 정리할 리전을 정한다. 지금 리전, 이 PC에서 같은 계정으로 배포를 시작했던 리전(`.state/regions.json`), 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전을 모두 포함한다. 그리고 정리 전 상태를 조회한다.
+1. 정리할 리전을 정한다. 지금 리전, 이 PC에서 같은 계정으로 배포를 시작했던 리전(`.state/regions.json`, Git 제외), 실행 기록(`runs/run_log.jsonl`)에 남은 모든 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전, 이 계정에 있는 `bike-demand-mlops-<리전>-<8자리>` 버킷 이름에 든 리전을 모두 포함한다. 그리고 정리 전 상태를 조회한다.
 2. 리전마다 Lambda 함수(모든 버전과 별칭 포함), 로그 그룹, S3 버킷(이름이 맞는 버킷이 여러 개면 모두, 모든 객체 버전과 삭제 표시 먼저)을 삭제한다. 지역 자원이 모두 지워졌을 때만 마지막으로 IAM 역할(인라인 정책 먼저)을 삭제한다. 지역 자원이 하나라도 남으면 그 자원이 역할을 쓸 수 있으므로 역할을 남긴다. 이 과제의 태그가 없는 자원은 지우지 않고 남은 자원으로 기록한다.
 3. 다시 조회해서 4개 자원이 모두 없는지 확인한다. IAM은 반영이 늦을 수 있어 3초 간격으로 최대 10번 다시 본다.
 4. 하나라도 남거나, 권한 오류 등으로 상태를 확인하지 못하면 실패로 기록한다. 다 지웠더라도 다른 계정으로 배포한 기록이 `.state/regions.json`에 남아 있으면 실패로 기록하고 그 계정의 프로필로 다시 실행하라고 알린다.
-5. 결과는 `results/cloud/cleanup.json`에 남는다.
+5. 결과는 성공하면 `results/cloud/cleanup.json`, 실패로 기록되면 `results/failed/<run_id>_cleanup/results/cloud/cleanup.json`에 남는다. 다른 계정의 기록 때문에 실패로 기록된 경우에도 이 계정의 자원 삭제 결과는 그 파일에 있다.
 
 ## 5. 보관하는 자료
 

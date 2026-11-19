@@ -100,6 +100,6 @@ early_stopping을 끈 이유: 기본값 'auto'는 학습 자료가 10,000행을 
 
 모델 버전은 네 곳에서 확인한다.
 1. `metadata.json`의 `model_sha256`
-2. Lambda 환경 변수 `MODEL_SHA256`. 받은 파일의 해시가 다르면 예측하지 않는다.
+2. Lambda 환경 변수 `MODEL_SHA256`. 이 값이 없거나 받은 파일의 해시가 다르면 예측하지 않는다.
 3. 모든 응답의 `model_version`, `model_sha256`, `runtime`(실행 환경의 Python, scikit-learn, numpy, boto3 버전)
 4. 실행 기록 `runs/run_log.jsonl`의 `model`

@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "<REPO>\bikeml\runlog.py", line 205, in run_steps
+    registry[name](ctx)
+  File "<REPO>\bikeml\evaluate.py", line 160, in step_evaluate
+    raise RuntimeError(f"합격 기준 미달: {checks}")
+RuntimeError: 합격 기준 미달: {'beats_all_baselines': True, 'mae_reduction_vs_hour_baseline': 0.499, 'meets_reduction': False}
