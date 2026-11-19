@@ -81,7 +81,7 @@
 | 기준 방법 MAE | 시간대 평균 94.78, 전체 평균 170.51 대/시간. 시간대 평균보다 49.9% 낮아 합격 | 같은 파일 |
 | 서비스 검사 (로컬 핸들러) | 12/12 통과 | [results/service_check/local.json](results/service_check/local.json) |
 | 실패 처리 예시 | 합격 기준을 90%로 올린 설정에서 evaluate 실패, check-local 건너뜀, 정상 결과는 그대로 | [results/failed/](results/failed/), [runs/run_log.jsonl](runs/run_log.jsonl) |
-| 테스트 | 107개 통과 | `python -m pytest -q` |
+| 테스트 | 111개 통과 | `python -m pytest -q` |
 | Lambda 패키지 | zip 64.29MB, 압축 해제 198.94MB (한도 250MB) | [results/cloud/package.json](results/cloud/package.json) |
 | 실제 AWS 실행 | 실행 전 | [docs/cloud.md](docs/cloud.md) |
 
@@ -168,7 +168,7 @@ aws lambda invoke --function-name bike-demand-predict --qualifier live --region 
 | `results/service_check/local.json`, `cloud.json` | 서비스 검사 결과 (로컬, Lambda), 실행 환경 버전 |
 | `results/cloud/package.json` | 패키지 해시, 크기, 들어간 라이브러리와 코드 해시 |
 | `results/cloud/deploy.json`, `deploy_override.json` | 정상 배포 기록, 오류 재현용 배포 기록 |
-| `results/cloud/cloud_eval.json`, `predictions_cloud.csv` | 클라우드 평가 (호출이 실패하면 그때까지의 호출 기록 `cloud_eval_calls.json`이 실패 폴더에 남음) |
+| `results/cloud/cloud_eval.json`, `predictions_cloud.csv` | 클라우드 평가 (호출이 실패하거나 예외로 끝나면 그때까지의 호출 기록 `cloud_eval_calls.json`이 실패 폴더에 남음) |
 | `results/cloud/release.json` | `live` 별칭을 옮긴 기록 (이전 버전 포함) |
 | `results/cloud/status*.json`, `cleanup.json` | 자원 상태, 정리 |
 | `results/failed/<run_id>_<단계>/` | 실패한 단계의 결과와 `error.txt` |

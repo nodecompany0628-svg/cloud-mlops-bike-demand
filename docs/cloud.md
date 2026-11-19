@@ -18,7 +18,7 @@
 1. `package`: 운영 담당자 PC에서 리눅스용 라이브러리로 zip(64MB)을 만든다.
 2. `deploy`: 배포 전 확인을 한 뒤 버킷, 역할, 로그 그룹을 준비하고 모델과 zip을 S3에 올린다. 함수를 만들거나 갱신하고 새 버전을 게시한다.
 3. Lambda는 콜드 스타트 때 S3에서 고정된 객체 버전의 모델을 한 번 받아 sha256과 입력 개수를 확인하고, 이후 요청은 메모리의 모델로 예측한다.
-4. `smoke`: 검사 사례 12개를 같은 실행에서 `deploy`가 게시한 버전에 보낸다(`smoke`만 따로 실행하면 가장 최근에 게시된 버전). 그 전에 정상 요청 1건을 보내, 새 역할 권한이 아직 반영되지 않아 모델 읽기가 403으로 실패하면 10초 간격으로 최대 6번 다시 보낸다. 기다린 횟수는 결과의 `readiness`에 남는다.
+4. `smoke`: 검사 사례 12개를 같은 실행에서 `deploy`가 게시한 버전에 보낸다(`smoke`만 따로 실행하면 가장 최근에 게시된 버전). 같은 실행에서 `deploy`가 역할을 새로 만들었으면, 먼저 정상 요청 1건을 보내 새 역할 권한이 아직 반영되지 않아 모델 읽기가 403으로 실패하는지 본다. 그렇다면 10초 간격으로 다시 보내며, 첫 요청을 포함해 최대 6번(기다림은 최대 50초) 보낸다. 역할이 이미 있던 배포에서는 기다리지 않으므로, 잘못된 모델 경로로 생긴 403을 권한 대기로 착각하지 않는다. 결과는 `readiness`에 남는다.
 5. `cloud-eval`: 평가 자료 2,888건을 같은 버전에 500건씩 보내 예측을 받고 로컬 결과와 비교한다.
 6. `release`: 그 버전이 smoke와 cloud-eval을 모두 통과했을 때만 `live` 별칭을 그 버전으로 옮긴다. 버전 번호만 보지 않고, 실행 기록에서 버전의 정체(리전, 리비전 ID, 코드 sha256, 모델 경로와 sha256)가 같은 smoke와 cloud-eval의 가장 최근 기록이 둘 다 성공인지 확인한다. 같은 버전을 다시 검사해 실패했다면 옮기지 않는다. 함수를 지웠다 다시 만들면 버전 번호가 1부터 다시 시작하므로 번호만으로는 같은 버전인지 알 수 없기 때문이다. 이전에 `live`가 가리키던 버전도 기록한다.
 7. 응답과 기록은 PC의 `results/`, `runs/`에 남기고 Git에 올린다. 함수 로그는 CloudWatch Logs에 남는다.
@@ -30,7 +30,7 @@
 | `live` 별칭 | 사용자는 `live`로 호출한다. `live`는 smoke와 cloud-eval을 모두 통과한 버전만 가리키므로, 배포나 검사 도중 실패해 `$LATEST`나 새 버전이 어중간한 상태여도 사용자 호출이 검사하지 않은 버전으로 가지 않는다. 메모리, 제한 시간, 환경 변수는 게시한 버전마다 고정되지만, 예약 동시성(2)과 실행 역할의 권한은 모든 버전이 함께 쓴다. 그래서 검사 중에는 `live` 호출과 동시 실행 자리를 나눠 쓰고, 예약 동시성 변경은 `live`에도 바로 적용된다. 역할 권한은 이 과제의 모든 버킷을 대상으로 잡아 두어, 버킷이 바뀌어도 `live`가 쓰던 모델을 계속 읽을 수 있다 |
 | 모델은 S3에 두고 실행할 때 내려받음 | 모델 버전을 코드 패키지와 따로 관리한다. 모델 경로에 모델 sha256 앞 12자리를 넣어(`models/hgb-v1/<sha12>/model.joblib`) 내용이 다른 모델은 다른 객체가 되게 하고, Lambda 환경 변수 `MODEL_URI`에 S3 객체 버전 ID까지 적는다(`...model.joblib?versionId=...`). 그래서 다시 학습해 올려도 이미 게시한 Lambda 버전이나 `live`가 가리키는 모델 파일은 덮이거나 수명 주기 규칙으로 지워지지 않는다 |
 | 같은 파일은 다시 올리지 않음 | 업로드 전에 S3의 현재 객체에 적힌 sha256을 보고, 같으면 그 객체 버전을 그대로 쓴다. 함수 설정의 설명은 고정 문구이고 커밋 정보는 버전 설명에만 넣는다. 그래서 모델, 코드, 설정이 그대로면 Lambda 설정도 그대로다. 이 경우 AWS 문서에 따르면 PublishVersion은 새 번호를 만들지 않고 기존 번호를 돌려주며, 버전 설명은 처음 게시할 때의 커밋으로 남는다. 이번 배포의 커밋은 `deploy.json`과 실행 기록에 남는다. 이 동작은 실제 AWS에서 확인할 부분이다(moto는 매번 새 번호를 만든다) |
-| 버전 관리 반영 대기 | AWS 문서는 버킷에서 버전 관리를 처음 켠 뒤 반영에 최대 15분이 걸릴 수 있다고 한다. 업로드 결과에 객체 버전이 없거나 그 버전을 읽지 못하면 30초 간격으로 최대 30번(15분) 다시 올린다 |
+| 버전 관리 반영 대기 | AWS 문서는 버킷에서 버전 관리를 처음 켠 뒤 반영에 최대 15분이 걸릴 수 있다고 한다. 업로드 결과에 객체 버전이 없거나 그 버전을 읽지 못하면 30초 간격으로 다시 올리며, 처음을 포함해 최대 30번(약 15분) 올린다 |
 | zip 패키지 (컨테이너 이미지 아님) | 이 PC에 Docker가 없다. scikit-learn, scipy, numpy의 리눅스용 휠을 `pip --platform manylinux...`로 받아 zip을 만든다. Lambda는 코드 폴더(/var/task)에 쓸 수 없어 콜드 스타트마다 라이브러리를 다시 컴파일하게 되므로 .pyc를 미리 만들어 넣는다. Python 3.12에서 빌드할 때만 만들고, 소스와 대조하지 않는 방식(unchecked-hash)을 써서 압축 해제 시각과 상관없이 그대로 쓰이게 하며, 소스 경로는 `/var/task/...`로 기록한다. /var/task는 읽기 전용이라 소스가 바뀔 일이 없다. 컴파일한 수와 실패한 파일은 `package.json`에 남는다. 압축 해제 198.94MB로 Lambda 한도 250MB 안이다. zip이 직접 업로드 한도 50MB를 넘어 S3를 거쳐 올린다 |
 | python3.12, x86_64 | 로컬 학습 환경과 같은 Python, 라이브러리 버전으로 맞춰 저장한 모델을 그대로 불러온다. python3.12 런타임은 Amazon Linux 2023(glibc 2.34) 기반이라 manylinux_2_28 휠이 동작한다. AWS 런타임 표 기준 지원 종료는 2028-10-31이다 |
 | 서울 리전 | 사용자(한국)와 가깝고 필요한 서비스가 모두 있다. 데이터가 공개 자료라 위치 제약이 없다 |
@@ -46,11 +46,11 @@
 | [config/lambda.json](../config/lambda.json) | 런타임, 메모리, 제한 시간, 임시 저장소, 예약 동시성, 로그 보관 일수 |
 | Lambda 환경 변수 | `MODEL_URI`(S3 경로와 객체 버전), `MODEL_VERSION`, `MODEL_SHA256`, `JOBLIB_MULTIPROCESSING=0` |
 
-자원 구분: 버킷, IAM 역할, Lambda 함수, 로그 그룹은 이 과제의 태그(`project`, `owner`)가 있을 때만 배포, release, 정리에서 바꾸거나 지운다. 예외는 이름이 `bike-demand-mlops-<리전>-<16진수 8자리>` 형식이고 태그도 객체도 없는 빈 버킷이다. 이 도구가 버킷을 만든 직후 태그를 붙이기 전에 멈춰 남은 것으로 보고, 배포는 태그를 붙여 이어받고 정리는 지운다.
+자원 구분: 버킷, IAM 역할, Lambda 함수, 로그 그룹은 이 과제의 태그(`project`, `owner`)가 있을 때만 배포, release, 정리에서 바꾸거나 지운다. 예외는 태그도 객체도 없는 빈 버킷 중 두 경우뿐이다. 하나는 이름이 `bike-demand-mlops-<리전>-<16진수 8자리>` 형식인 버킷이고, 다른 하나는 `cloud.bucket`에 적은 이름이면서 실행 기록에 이 도구가 쓴 기록이 있는 버킷이다. 둘 다 이 도구가 버킷을 만든 직후 태그를 붙이기 전에 멈춰 남은 것으로 보고, 배포는 태그를 붙여 이어받고 정리는 지운다. 기록이 없는 설정 버킷은 사용자가 직접 만든 것일 수 있으므로 건드리지 않는다.
 
 `JOBLIB_MULTIPROCESSING=0`을 두는 이유: Lambda에는 /dev/shm이 없어 joblib을 불러올 때 경고가 난다. 예측은 한 프로세스에서 하므로 joblib 병렬 처리를 끈다.
 
-Lambda 실행 역할 `bike-demand-predict-role`은 권한 경계 `bike-demand-predict-boundary`([docs/iam/lambda-boundary.json](iam/lambda-boundary.json))를 달고 만들어진다. 운영자 정책은 이 경계가 붙은 역할만 만들거나 인라인 정책을 바꿀 수 있게 조건을 걸었다. 그래서 운영자가 역할 정책에 넓은 권한을 넣고 Lambda 코드를 바꿔 실행하더라도, 실제 권한은 경계 안(로그 쓰기, 모델 읽기)을 넘지 못한다. 경계 정책은 관리자가 미리 만들고, 루트나 관리자 키로 배포하면 없을 때 도구가 만든다. 이미 있는 역할에 이 경계가 없으면 배포를 멈춘다. 역할의 인라인 정책 권한은 두 가지뿐이다([bikeml/cloud.py](../bikeml/cloud.py)의 `role_policy`).
+Lambda 실행 역할 `bike-demand-predict-role`은 권한 경계 `bike-demand-predict-boundary`([docs/iam/lambda-boundary.json](iam/lambda-boundary.json))를 달고 만들어진다. 운영자 정책은 이 경계가 붙은 역할만 만들거나 인라인 정책을 바꿀 수 있게 조건을 걸었다. 그래서 운영자가 역할 정책에 넓은 권한을 넣고 Lambda 코드를 바꿔 실행하더라도, 실제 권한은 경계 안(로그 쓰기, 모델 읽기)을 넘지 못한다. 경계 정책은 관리자가 미리 만들고, 루트나 관리자 키로 배포하면 없을 때 도구가 만든다. 운영자 정책에는 정책을 만들거나 지우는 권한이 없다. 그 권한이 있으면 경계를 바꾸거나 없애 권한을 넓힐 수 있기 때문이다. 그래서 운영자 키로 정리하면 도구가 만든 경계 정책도 남고 결과에 `kept`로 기록된다(IAM 정책은 비용이 없다). 이미 있는 역할에 이 경계가 없으면 배포를 멈춘다. 역할의 인라인 정책 권한은 두 가지뿐이다([bikeml/cloud.py](../bikeml/cloud.py)의 `role_policy`).
 - 자기 로그 그룹에 로그 쓰기 (`logs:CreateLogStream`, `logs:PutLogEvents`)
 - 이 과제의 모든 버킷(`bike-demand-mlops-*`)의 `models/*` 읽기 (`s3:GetObject`, `s3:GetObjectVersion`). 지금 버킷만 허용하면, 버킷을 바꿔 배포할 때 아직 이전 버전을 가리키는 `live`가 모델을 못 읽게 되기 때문이다
 
@@ -74,7 +74,7 @@ Lambda 실행 역할 `bike-demand-predict-role`은 권한 경계 `bike-demand-pr
 | 모델 | Git: `models/hgb-v1/`, 클라우드: `s3://<버킷>/models/hgb-v1/<모델 sha 12자리>/` |
 | 배포 패키지 | 로컬: `build/lambda_package.zip` (Git 제외), 클라우드: `s3://<버킷>/packages/lambda-<sha12>.zip` |
 | 요청 예시 | `samples/service_cases.json`, `samples/generated/request_2012-12-03.json` |
-| 클라우드 응답과 평가 | Git: `results/service_check/cloud.json`, `results/cloud/cloud_eval.json`, `results/cloud/predictions_cloud.csv`. 클라우드 평가 중 호출이 실패하면 그때까지의 호출 기록 `cloud_eval_calls.json`이 실패 폴더에 남는다 |
+| 클라우드 응답과 평가 | Git: `results/service_check/cloud.json`, `results/cloud/cloud_eval.json`, `results/cloud/predictions_cloud.csv`. 클라우드 평가 중 호출이 실패하거나 호출 자체가 예외로 끝나면 그때까지의 호출 기록 `cloud_eval_calls.json`이 실패 폴더에 남는다 |
 | 배포 기록 | Git: `results/cloud/package.json`, `results/cloud/deploy.json`. 오류 재현용 배포는 `deploy_override.json`에 따로 남겨 정상 배포 기록을 덮지 않는다 |
 | 함수 로그 | CloudWatch Logs `/aws/lambda/bike-demand-predict` (7일). 필요한 부분은 Git 기록으로 옮긴다 |
 | 실행 기록 | Git: `runs/run_log.jsonl` |
@@ -135,10 +135,10 @@ python -m bikeml --config config/demo_strict_criteria.json run evaluate check-lo
 
 | 항목 | 결과 |
 |---|---|
-| run_id | `20261120T015410-0913c9` |
+| run_id | `20261120T021545-624783` |
 | evaluate | failed. `RuntimeError: 합격 기준 미달: {'beats_all_baselines': True, 'mae_reduction_vs_hour_baseline': 0.499, 'meets_reduction': False}` |
 | check-local | skipped (`이전 단계 실패로 실행하지 않음: evaluate`) |
-| 실패한 결과 | `results/failed/20261120T015410-0913c9_evaluate/` (metrics.json의 `passed: false`, error.txt) |
+| 실패한 결과 | `results/failed/20261120T021545-624783_evaluate/` (metrics.json의 `passed: false`, error.txt) |
 | 정상 결과 | `results/evaluation/metrics.json`은 그대로 (`passed: true`, 기준 0.3). 후보 모델은 `models/hgb-v1/`로 옮겨지지 않았다 |
 | 배포 | 정상 설정으로는 배포 전 확인을 통과한다. 엄격한 설정으로 `deploy`를 실행하면 "evaluate 이후 합격 기준이나 평가 자료가 바뀜"으로 멈춘다 |
 
