@@ -18,12 +18,13 @@ STEPS = {
     "deploy": cloud.step_deploy,
     "smoke": cloud.step_smoke,
     "cloud-eval": cloud.step_cloud_eval,
+    "release": cloud.step_release,
     "status": cloud.step_status,
     "cleanup": cloud.step_cleanup,
 }
 GROUPS = {
     "local": ["fetch", "prepare", "train", "evaluate", "check-local"],
-    "cloud": ["package", "deploy", "smoke", "cloud-eval"],
+    "cloud": ["package", "deploy", "smoke", "cloud-eval", "release"],
 }
 GROUPS["all"] = GROUPS["local"] + GROUPS["cloud"]
 

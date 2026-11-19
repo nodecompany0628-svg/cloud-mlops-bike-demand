@@ -74,16 +74,34 @@ def test_passing_candidate_is_published(isolated):
     assert metrics["passed"] and metrics["model_source"] == "candidate" and metrics["model"]["sha256"] == sha
 
 
-def test_stale_candidate_is_rejected(isolated):
+def make_stale(folder, field="train_data"):
+    meta = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
+    if field == "train_data":
+        meta["train_data"]["sha256"] = "0" * 64
+    else:
+        meta["feature_code_sha256"] = "0" * 64
+    (folder / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+def test_stale_candidate_falls_back_to_matching_published_model(isolated):
     root, published, candidate = isolated
-    good = joblib.load(GOOD_MODEL / "model.joblib")
-    write_candidate(candidate, good)
-    meta = json.loads((candidate / "metadata.json").read_text(encoding="utf-8"))
-    meta["train_data"]["sha256"] = "0" * 64
-    (candidate / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+    write_candidate(candidate, joblib.load(GOOD_MODEL / "model.joblib"))
+    make_stale(candidate)
     before = sha256_file(published / "model.joblib")
+
+    assert run_evaluate() == 0
+    metrics = json.loads((root / "results" / "evaluation" / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["model_source"] == "published"
+    assert sha256_file(published / "model.joblib") == before
+
+
+def test_no_matching_model_stops_evaluation(isolated):
+    root, published, candidate = isolated
+    write_candidate(candidate, joblib.load(GOOD_MODEL / "model.joblib"))
+    make_stale(candidate)
+    make_stale(published, "feature_code")
 
     assert run_evaluate() == 1
     rec = [json.loads(x) for x in (root / "runs" / "run_log.jsonl").read_text(encoding="utf-8").splitlines()][-1]
-    assert "train" in rec["error"] and "학습 자료" in rec["error"]
-    assert sha256_file(published / "model.joblib") == before
+    assert "train" in rec["error"] and "학습 자료" in rec["error"] and "특성 코드" in rec["error"]
+    assert not (root / "results" / "evaluation" / "metrics.json").exists()

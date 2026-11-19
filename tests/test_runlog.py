@@ -149,3 +149,10 @@ def test_load_json_accepts_bom(tmp_path):
     p = tmp_path / "c.json"
     p.write_bytes(b"\xef\xbb\xbf" + json.dumps({"a": 1}).encode("utf-8"))
     assert load_json(p) == {"a": 1}
+
+
+def test_sanitize_ignores_path_case():
+    raw = str(ROOT / "bikeml" / "runlog.py")
+    for text in (raw.lower(), raw.upper(), json.dumps(raw.lower())):
+        clean = runlog.sanitize(text, [])
+        assert Path.home().name.lower() not in clean.lower()

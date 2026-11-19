@@ -96,7 +96,7 @@ def regional(resources, region="ap-northeast-2"):
 
 
 def test_cloud_steps_end_to_end(sandbox):
-    steps = ["deploy", "deploy", "smoke", "cloud-eval", "status", "cleanup"]
+    steps = ["deploy", "deploy", "smoke", "cloud-eval", "release", "status", "cleanup"]
     with mock_aws():
         rc = run(steps)
     recs = records(sandbox)
@@ -114,8 +114,12 @@ def test_cloud_steps_end_to_end(sandbox):
     assert deploy["model_upload"]["uploaded"] is False and deploy["package_upload"]["uploaded"] is False
 
     smoke = read(sandbox, "results/service_check/cloud.json")
-    assert smoke["all_passed"] and smoke["total"] == len(load_cases())
-    assert smoke["alias"]["alias"] == "live" and smoke["alias"]["version"] == recs[2]["cloud"]["function_version"]
+    assert smoke["all_passed"] and smoke["total"] == len(load_cases()) and "alias" not in smoke
+    assert smoke["function_version"] == recs[1]["cloud"]["function_version"]
+
+    release = read(sandbox, "results/cloud/release.json")
+    assert release["alias"]["alias"] == "live" and release["function_version"] == smoke["function_version"]
+    assert release["previous_live"] is None
 
     ev = read(sandbox, "results/cloud/cloud_eval.json")
     assert ev["identical_to_local"] and ev["rows"] == 2888 and ev["batches"] == 6
@@ -124,7 +128,8 @@ def test_cloud_steps_end_to_end(sandbox):
     status = read(sandbox, "results/cloud/status.json")
     assert status["resources"]["iam_role"]["exists"] is True
     assert all(v["exists"] is True for v in regional(status["resources"]).values())
-    assert regional(status["resources"])["lambda_function"]["alias_live"] == smoke["alias"]["version"]
+    assert regional(status["resources"])["lambda_function"]["alias_live"] == release["function_version"]
+    assert status["other_account_regions"] == []
 
     clean = read(sandbox, "results/cloud/cleanup.json")
     assert clean["all_gone"] and all(a["result"] == "deleted" for a in clean["actions"])
@@ -253,3 +258,44 @@ def test_env_credentials_opt_in_requires_env_keys(sandbox, monkeypatch):
     rc = run(["status"])
     recs = records(sandbox)
     assert rc == 1 and "AWS_ACCESS_KEY_ID" in recs[0]["error"]
+
+
+def test_release_requires_cloud_eval(sandbox):
+    with mock_aws():
+        rc = run(["deploy", "smoke", "release"])
+        alias = None
+        lam = boto3.client("lambda", region_name="ap-northeast-2")
+        try:
+            alias = lam.get_alias(FunctionName="bike-demand-predict", Name="live")
+        except lam.exceptions.ResourceNotFoundException:
+            pass
+    recs = records(sandbox)
+    assert rc == 1 and [r["status"] for r in recs] == ["success", "success", "failed"]
+    assert "cloud-eval" in recs[-1]["error"] and alias is None
+
+
+def test_empty_untagged_bucket_with_our_name_is_adopted(sandbox):
+    name = "bike-demand-mlops-ap-northeast-2-0a1b2c3d"
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="ap-northeast-2")
+        s3.create_bucket(Bucket=name, CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"})
+        assert run(["deploy"]) == 0
+        deploy = read(sandbox, "results/cloud/deploy.json")
+        assert run(["cleanup"]) == 0
+        left = [b["Name"] for b in s3.list_buckets()["Buckets"]]
+    assert deploy["bucket"] == "adopted" and deploy["cloud"]["bucket"] == name and left == []
+
+
+def test_cleanup_reports_deployments_from_other_account(sandbox):
+    cloud.write_json(cloud.REGIONS_STATE, [{"account": cloud.account_key("999999999999"), "region": "eu-west-1"}])
+    with mock_aws():
+        rc = run(["cleanup"])
+    recs = records(sandbox)
+    assert rc == 1 and "다른 계정" in recs[-1]["error"]
+    assert cloud.deployments() == [{"account": cloud.account_key("999999999999"), "region": "eu-west-1"}]
+
+
+def test_status_name_is_validated_before_aws(sandbox):
+    rc = run(["status"], status_name="../../x")
+    recs = records(sandbox)
+    assert rc == 1 and "--status-name" in recs[0]["error"]

@@ -77,13 +77,13 @@ PRINCIPAL = re.compile(r"((?:user|assumed-role|federated-user)/)[^\s\\\"',;)]+")
 
 def _user_pattern() -> re.Pattern | None:
     name = Path.home().name
-    return re.compile(r"(Users[\\/]+)" + re.escape(name)) if name else None
+    return re.compile(r"(Users[\\/]+)" + re.escape(name), re.IGNORECASE) if name else None
 
 
 def sanitize(obj, secrets: list[str]):
     if isinstance(obj, str):
         for s, repl in _redactions(secrets):
-            obj = obj.replace(s, repl)
+            obj = re.sub(re.escape(s), lambda _m, r=repl: r, obj, flags=re.IGNORECASE)
         obj = PRINCIPAL.sub(r"\1<NAME>", obj)
         pat = _user_pattern()
         return pat.sub(r"\1<USER>", obj) if pat else obj

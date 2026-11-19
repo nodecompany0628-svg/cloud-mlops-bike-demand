@@ -74,7 +74,7 @@ def build_package(lambda_cfg: dict) -> dict:
     if unzipped > UNZIPPED_LIMIT:
         raise RuntimeError(f"압축 해제 크기 {unzipped / 1e6:.1f}MB 가 Lambda 한도 250MB 를 넘습니다")
 
-    files = sorted(p for p in PKG_DIR.rglob("*") if p.is_file())
+    files = sorted((p for p in PKG_DIR.rglob("*") if p.is_file()), key=lambda p: p.relative_to(PKG_DIR).as_posix())
     if ZIP_PATH.exists():
         ZIP_PATH.unlink()
     with zipfile.ZipFile(ZIP_PATH, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as z:

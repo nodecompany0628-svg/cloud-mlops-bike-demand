@@ -9,7 +9,7 @@ import sklearn
 from sklearn.ensemble import HistGradientBoostingRegressor
 
 from .common import ROOT, rel, sha256_file, write_json
-from .data import TARGET, feature_matrix
+from .data import FEATURE_CODE, TARGET, feature_matrix, split_problems
 from .features import FEATURES
 from .runlog import now_iso
 
@@ -24,6 +24,10 @@ def step_train(ctx) -> None:
     train_path = ROOT / cfg["data"]["processed_dir"] / "train.csv"
     ctx.add_input(train_path)
     train = pd.read_csv(train_path)
+    test = pd.read_csv(ROOT / cfg["data"]["processed_dir"] / "test.csv")
+    bad = split_problems(cfg, train, test)
+    if bad:
+        raise RuntimeError(f"{', '.join(bad)}이 config 의 split 과 다릅니다. prepare 를 먼저 실행하세요")
 
     X = np.asarray(feature_matrix(train), dtype=float)
     y = train[TARGET].to_numpy(dtype=float)
@@ -46,6 +50,7 @@ def step_train(ctx) -> None:
         "algorithm": "sklearn.ensemble.HistGradientBoostingRegressor",
         "params": mcfg["params"],
         "features": FEATURES,
+        "feature_code_sha256": sha256_file(FEATURE_CODE),
         "target": "cnt (시간당 전체 대여 건수, 대/시간)",
         "train_data": {"path": rel(train_path), "sha256": sha256_file(train_path),
                        "rows": int(len(train)), "first": train.datetime.min(), "last": train.datetime.max()},

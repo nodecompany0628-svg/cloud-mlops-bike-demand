@@ -39,3 +39,14 @@ def test_unit_conversion_ranges():
     assert df.feels_like_c.between(-16, 50).all()
     assert df.windspeed_kmh.between(0, 67).all()
     assert pd.Timestamp(df.datetime.iloc[0]) == pd.Timestamp("2011-01-01 00:00")
+
+
+def test_split_problems_detects_changed_periods():
+    from bikeml.data import split_problems
+    df = to_requests(load_raw(CFG))
+    train, test = split(df, CFG)
+    assert split_problems(CFG, train, test) == []
+    moved = {**CFG, "split": {**CFG["split"], "train_end": "2012-06-30", "test_start": "2012-07-01"}}
+    assert split_problems(moved, train, test) == ["학습 자료 기간"]
+    shorter = {**CFG, "split": {**CFG["split"], "test_end": "2012-11-30"}}
+    assert split_problems(shorter, train, test) == ["평가 자료 기간"]

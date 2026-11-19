@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import joblib
 import numpy as np
 import pandas as pd
 
 from .common import ROOT, candidate_dir, load_json, model_dir, sha256_file, write_json
-from .data import TARGET, feature_matrix
+from .data import TARGET, feature_matrix, model_mismatches, split_problems
 from .features import FEATURES
 
 SANDY_DAYS = ("2012-10-29", "2012-10-30")
@@ -30,21 +28,22 @@ def daily_mae(dt: pd.Series, y_true, y_pred) -> float:
     return round(float(np.mean(np.abs(d.p - d.y))), 1)
 
 
-def model_source(cfg) -> tuple[Path, str]:
-    cand = candidate_dir(cfg)
-    if (cand / "model.joblib").exists() and (cand / "metadata.json").exists():
-        return cand, "candidate"
-    return model_dir(cfg), "published"
-
-
 def load_model(cfg):
-    mdir, source = model_source(cfg)
-    meta = load_json(mdir / "metadata.json")
-    path = mdir / "model.joblib"
-    sha = sha256_file(path)
-    if sha != meta["model_sha256"]:
-        raise ValueError(f"모델 파일 sha256 이 metadata 와 다릅니다 ({sha[:12]}... != {meta['model_sha256'][:12]}...)")
-    return joblib.load(path), meta, path, source
+    tried = []
+    for mdir, source in ((candidate_dir(cfg), "candidate"), (model_dir(cfg), "published")):
+        if not ((mdir / "model.joblib").exists() and (mdir / "metadata.json").exists()):
+            continue
+        meta = load_json(mdir / "metadata.json")
+        stale = model_mismatches(meta, cfg)
+        if stale:
+            tried.append(f"{source}: {', '.join(stale)}")
+            continue
+        path = mdir / "model.joblib"
+        sha = sha256_file(path)
+        if sha != meta["model_sha256"]:
+            raise ValueError(f"모델 파일 sha256 이 metadata 와 다릅니다 ({sha[:12]}... != {meta['model_sha256'][:12]}...)")
+        return joblib.load(path), meta, path, source
+    raise RuntimeError(f"지금 설정과 맞는 모델이 없습니다 ({'; '.join(tried) or '모델 없음'}). train 을 먼저 실행하세요")
 
 
 def baselines(train: pd.DataFrame, X_train: np.ndarray, X_test: np.ndarray) -> dict:
@@ -66,16 +65,11 @@ def step_evaluate(ctx) -> None:
     for p in (pdir / "train.csv", pdir / "test.csv", mpath):
         ctx.add_input(p)
 
-    stale = [name for name, ok in (
-        ("학습 자료", (meta.get("train_data") or {}).get("sha256") == sha256_file(pdir / "train.csv")),
-        ("하이퍼파라미터", meta.get("params") == cfg["model"]["params"]),
-        ("모델 버전", meta.get("version") == cfg["model"]["version"]),
-    ) if not ok]
-    if stale:
-        raise RuntimeError(f"평가할 모델({source})이 지금 설정과 다릅니다({', '.join(stale)}). train 을 먼저 실행하세요")
-
     train = pd.read_csv(pdir / "train.csv")
     test = pd.read_csv(pdir / "test.csv")
+    bad = split_problems(cfg, train, test)
+    if bad:
+        raise RuntimeError(f"{', '.join(bad)}이 config 의 split 과 다릅니다. prepare 를 먼저 실행하세요")
     X_train = np.asarray(feature_matrix(train), dtype=float)
     X_test = np.asarray(feature_matrix(test, allow_missing_humidity=False), dtype=float)
     y = test[TARGET].to_numpy(dtype=float)

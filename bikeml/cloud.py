@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -132,20 +133,33 @@ class Cloud:
         if not self.ours(tags):
             raise NotOurs(f"{kind} 에 이 과제의 태그가 없어 건드리지 않습니다")
 
+    def bucket_is_empty(self) -> bool:
+        page = self.s3.list_object_versions(Bucket=self.bucket, MaxKeys=1)
+        return not page.get("Versions") and not page.get("DeleteMarkers")
+
+    def tag_bucket(self) -> None:
+        self.s3.put_bucket_tagging(Bucket=self.bucket, Tagging={
+            "TagSet": [{"Key": k, "Value": v} for k, v in self.tags.items()]})
+
     def ensure_bucket(self) -> str:
         if self.bucket:
             self.s3.head_bucket(Bucket=self.bucket)
-            self.require_ours(f"버킷 {self.bucket}", self.bucket_tags())
-            created = False
+            tags = self.bucket_tags()
+            created = "exists"
+            if not self.ours(tags):
+                ours_by_name = re.fullmatch(re.escape(self.bucket_prefix) + "[0-9a-f]{8}", self.bucket)
+                if tags or not ours_by_name or not self.bucket_is_empty():
+                    self.require_ours(f"버킷 {self.bucket}", tags)
+                self.tag_bucket()
+                created = "adopted"
         else:
             self.bucket = self.bucket_prefix + pysecrets.token_hex(4)
             kwargs = {} if self.region == "us-east-1" else {
                 "CreateBucketConfiguration": {"LocationConstraint": self.region}}
             self.s3.create_bucket(Bucket=self.bucket, **kwargs)
             self.s3.get_waiter("bucket_exists").wait(Bucket=self.bucket)
-            self.s3.put_bucket_tagging(Bucket=self.bucket, Tagging={
-                "TagSet": [{"Key": k, "Value": v} for k, v in self.tags.items()]})
-            created = True
+            self.tag_bucket()
+            created = "created"
         self.s3.put_public_access_block(Bucket=self.bucket, PublicAccessBlockConfiguration={
             "BlockPublicAcls": True, "IgnorePublicAcls": True,
             "BlockPublicPolicy": True, "RestrictPublicBuckets": True})
@@ -156,7 +170,7 @@ class Cloud:
             {"ID": "expire-noncurrent", "Status": "Enabled", "Filter": {"Prefix": ""},
              "NoncurrentVersionExpiration": {"NoncurrentDays": 30}},
         ]})
-        return "created" if created else "exists"
+        return created
 
     def role_policy(self) -> dict:
         return {
@@ -475,18 +489,34 @@ def all_gone(resources: dict) -> bool:
     return resources["iam_role"].get("exists") is False and all(v.get("exists") is False for v in regional)
 
 
-def remembered_regions() -> list[str]:
-    return load_json(REGIONS_STATE) if REGIONS_STATE.exists() else []
+def account_key(account: str) -> str:
+    return hashlib.sha256(account.encode()).hexdigest()
 
 
-def remember_region(region: str) -> None:
-    regions = remembered_regions()
-    if region not in regions:
-        write_json(REGIONS_STATE, regions + [region])
+def deployments() -> list[dict]:
+    data = load_json(REGIONS_STATE) if REGIONS_STATE.exists() else []
+    return [d for d in data if isinstance(d, dict) and d.get("account") and d.get("region")]
 
 
-def known_regions(cfg: dict, args) -> list[str]:
-    regions = {resolve_region(cfg, getattr(args, "region", None)), *remembered_regions()}
+def remember_region(account: str, region: str) -> None:
+    entry = {"account": account_key(account), "region": region}
+    deps = deployments()
+    if entry not in deps:
+        write_json(REGIONS_STATE, deps + [entry])
+
+
+def forget_account(account: str) -> None:
+    if REGIONS_STATE.exists():
+        write_json(REGIONS_STATE, [d for d in deployments() if d["account"] != account_key(account)])
+
+
+def other_account_regions(account: str) -> list[str]:
+    return sorted({d["region"] for d in deployments() if d["account"] != account_key(account)})
+
+
+def known_regions(cfg: dict, args, account: str) -> list[str]:
+    regions = {resolve_region(cfg, getattr(args, "region", None))}
+    regions |= {d["region"] for d in deployments() if d["account"] == account_key(account)}
     for name in ("deploy.json", "deploy_override.json"):
         path = ROOT / "results" / "cloud" / name
         if path.exists():
@@ -508,15 +538,16 @@ def _load_or_empty(path) -> dict:
 
 def preflight_problems(model_meta: dict, model_file_sha: str, evaluation: dict, service_check: dict,
                        package_info: dict, zip_sha: str | None, app_files: dict, requirements_sha: str,
-                       criteria: dict, test_sha: str, train_sha: str, model_cfg: dict,
+                       criteria: dict, test_sha: str, model_mismatch: list, split_mismatch: list,
                        lambda_cfg: dict) -> list[str]:
     model_sha = model_meta.get("model_sha256")
     problems = []
     if model_file_sha != model_sha:
         problems.append("모델 파일이 metadata.json 의 sha256 과 다름")
-    if (model_meta.get("train_data") or {}).get("sha256") != train_sha \
-            or model_meta.get("params") != model_cfg.get("params") or model_meta.get("version") != model_cfg.get("version"):
-        problems.append("모델이 지금 학습 자료와 설정으로 학습되지 않음")
+    if split_mismatch:
+        problems.append(f"정리한 자료가 config 의 split 과 다름({', '.join(split_mismatch)})")
+    if model_mismatch:
+        problems.append(f"모델이 지금 학습 자료와 설정으로 학습되지 않음({', '.join(model_mismatch)})")
     if not evaluation.get("passed") or (evaluation.get("model") or {}).get("sha256") != model_sha:
         problems.append("이 모델로 evaluate 를 통과한 기록이 없음")
     elif evaluation.get("criteria") != criteria or (evaluation.get("eval_data") or {}).get("sha256") != test_sha:
@@ -537,8 +568,10 @@ def preflight_problems(model_meta: dict, model_file_sha: str, evaluation: dict, 
 
 def deploy_preflight(cfg: dict, lambda_cfg: dict) -> dict:
     from . import package
+    from .data import model_mismatches, split_problems
 
     meta = load_json(model_dir(cfg) / "metadata.json")
+    pdir = ROOT / cfg["data"]["processed_dir"]
     pkg = _load_or_empty(ROOT / "results" / "cloud" / "package.json")
     zip_path = package.ZIP_PATH
     problems = preflight_problems(
@@ -551,9 +584,9 @@ def deploy_preflight(cfg: dict, lambda_cfg: dict) -> dict:
         app_files={arc: sha256_file(src) for arc, src in package.APP_FILES.items()},
         requirements_sha=sha256_file(package.REQUIREMENTS),
         criteria=cfg["evaluation"]["criteria"],
-        test_sha=sha256_file(ROOT / cfg["data"]["processed_dir"] / "test.csv"),
-        train_sha=sha256_file(ROOT / cfg["data"]["processed_dir"] / "train.csv"),
-        model_cfg=cfg["model"],
+        test_sha=sha256_file(pdir / "test.csv"),
+        model_mismatch=model_mismatches(meta, cfg),
+        split_mismatch=split_problems(cfg, pd.read_csv(pdir / "train.csv"), pd.read_csv(pdir / "test.csv")),
         lambda_cfg=lambda_cfg,
     )
     if problems:
@@ -572,7 +605,7 @@ def step_deploy(ctx) -> None:
     ctx.add_input(zip_path)
     ctx.model = {"name": meta["name"], "version": meta["version"], "sha256": meta["model_sha256"]}
     cloud = Cloud(cfg, ctx.args, ctx)
-    remember_region(cloud.region)
+    remember_region(cloud.account, cloud.region)
 
     res = {"cloud": cloud.info()}
     res["bucket"] = cloud.ensure_bucket()
@@ -626,14 +659,13 @@ def step_smoke(ctx) -> None:
     report = run_cases(invoke, expected, f"lambda:{cloud.fn}:{version}", ctx.cfg, ctx.secrets)
     day = sample_day_comparison(report.pop("responses"), ctx.cfg)
     report["sample_day"] = day
+    report["function_version"] = version
+    write_json(ctx.out("results/service_check/cloud.json"), report)
     ctx.summary = {"passed": report["passed"], "total": report["total"], "function_version": version}
     if not report["all_passed"]:
-        write_json(ctx.out("results/service_check/cloud.json"), report)
         bad = [f"{c['name']}: {c['problems'][:1]}" for c in report["cases"] if not c["passed"]]
         raise RuntimeError(f"클라우드 서비스 검사 실패 {len(bad)}건: {bad[:3]}")
-    report["alias"] = cloud.point_alias(version)
-    write_json(ctx.out("results/service_check/cloud.json"), report)
-    ctx.cloud = {**ctx.cloud, "alias": report["alias"]}
+    ctx.state["smoke_passed_version"] = version
 
 
 def step_cloud_eval(ctx) -> None:
@@ -692,10 +724,41 @@ def step_cloud_eval(ctx) -> None:
                    "max_abs_diff_vs_local": report["max_abs_diff_vs_local"], "function_version": version}
     if not report["identical_to_local"]:
         raise RuntimeError(f"클라우드 예측이 로컬과 다릅니다 (최대 차이 {report['max_abs_diff_vs_local']})")
+    ctx.state["cloud_eval_passed_version"] = version
+
+
+def passed_version(ctx, key: str, path, ok) -> str | None:
+    if key in ctx.state:
+        return ctx.state[key]
+    if not path.exists():
+        return None
+    report = load_json(path)
+    return report.get("function_version") if ok(report) else None
+
+
+def step_release(ctx) -> None:
+    cloud = Cloud(ctx.cfg, ctx.args, ctx)
+    version = ctx.state.get("deployed_version") or cloud.latest_version()
+    smoke_v = passed_version(ctx, "smoke_passed_version", ROOT / "results" / "service_check" / "cloud.json",
+                             lambda r: r.get("all_passed"))
+    eval_v = passed_version(ctx, "cloud_eval_passed_version", ROOT / "results" / "cloud" / "cloud_eval.json",
+                            lambda r: r.get("identical_to_local"))
+    if smoke_v != version or eval_v != version:
+        raise RuntimeError(f"버전 {version} 은 smoke 와 cloud-eval 을 모두 통과한 기록이 없습니다 "
+                           f"(smoke {smoke_v}, cloud-eval {eval_v})")
+    previous = cloud.alias_version()
+    alias = cloud.point_alias(version)
+    report = {"released_at": now_iso(), **cloud.info(), "function_version": version,
+              "previous_live": previous, "alias": alias}
+    write_json(ctx.out("results/cloud/release.json"), report)
+    ctx.cloud = {**cloud.info(), "function_version": version, "alias": alias}
+    ctx.summary = {"live": version, "previous_live": previous}
 
 
 def _clouds(ctx) -> list[Cloud]:
-    return [Cloud(ctx.cfg, ctx.args, ctx, region=r) for r in known_regions(ctx.cfg, ctx.args)]
+    first = Cloud(ctx.cfg, ctx.args, ctx)
+    others = [r for r in known_regions(ctx.cfg, ctx.args, first.account) if r != first.region]
+    return [first] + [Cloud(ctx.cfg, ctx.args, ctx, region=r) for r in others]
 
 
 def _status_all(clouds: list[Cloud]) -> dict:
@@ -704,11 +767,13 @@ def _status_all(clouds: list[Cloud]) -> dict:
 
 
 def step_status(ctx) -> None:
+    name = getattr(ctx.args, "status_name", None) or "status"
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        raise RuntimeError(f"--status-name 에는 영문, 숫자, _, - 만 쓸 수 있습니다: {name}")
     clouds = _clouds(ctx)
     resources = _status_all(clouds)
     st = {"checked_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
-          "resources": resources}
-    name = getattr(ctx.args, "status_name", None) or "status"
+          "other_account_regions": other_account_regions(clouds[0].account), "resources": resources}
     write_json(ctx.out(f"results/cloud/{name}.json"), st)
     ctx.cloud = {**clouds[0].info(), "regions_checked": st["regions_checked"]}
     ctx.summary = {"iam_role": resources["iam_role"].get("exists"),
@@ -726,12 +791,17 @@ def step_cleanup(ctx) -> None:
             break
         time.sleep(STATUS_WAIT_S)
         after = _status_all(clouds)
+    others = other_account_regions(clouds[0].account)
     report = {"cleaned_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
-              "before": before, "actions": deleted, "after": after, "all_gone": all_gone(after)}
+              "before": before, "actions": deleted, "after": after, "all_gone": all_gone(after),
+              "other_account_regions": others}
     write_json(ctx.out("results/cloud/cleanup.json"), report)
     ctx.cloud = {**clouds[0].info(), "regions_checked": report["regions_checked"]}
-    ctx.summary = {"all_gone": report["all_gone"], "actions": {d["resource"]: d["result"] for d in deleted}}
+    ctx.summary = {"all_gone": report["all_gone"], "actions": {d["resource"]: d["result"] for d in deleted},
+                   "other_account_regions": others}
     if not report["all_gone"]:
         raise RuntimeError(f"남은 자원이 있거나 확인하지 못했습니다: {after}")
-    if REGIONS_STATE.exists():
-        write_json(REGIONS_STATE, [])
+    forget_account(clouds[0].account)
+    if others:
+        raise RuntimeError(f"이 계정의 자원은 모두 지웠지만, 다른 계정에서 배포한 기록이 남아 있습니다(리전 {others}). "
+                           "그 계정의 프로필로 cleanup 을 실행하세요")

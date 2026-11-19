@@ -17,6 +17,7 @@ HUM_SCALE = 100.0
 WIND_SCALE = 67.0
 
 REQUEST_COLUMNS = ["datetime", "holiday", "weather", "temp_c", "feels_like_c", "humidity", "windspeed_kmh"]
+FEATURE_CODE = ROOT / "bikeml" / "features.py"
 TARGET = "cnt"
 EXPECTED_ROWS = 17379
 
@@ -135,6 +136,31 @@ def split(df: pd.DataFrame, cfg) -> tuple[pd.DataFrame, pd.DataFrame]:
     if train.datetime.max() >= test.datetime.min():
         raise ValueError("학습 자료가 평가 자료보다 늦은 시각을 포함합니다")
     return train.reset_index(drop=True), test.reset_index(drop=True)
+
+
+def split_problems(cfg: dict, train: pd.DataFrame, test: pd.DataFrame) -> list[str]:
+    s = cfg["split"]
+    out = []
+    tr, te = train.datetime.str.slice(0, 10), test.datetime.str.slice(0, 10)
+    if tr.empty or tr.min() < s["train_start"] or tr.max() > s["train_end"]:
+        out.append("학습 자료 기간")
+    if te.empty or te.min() < s["test_start"] or te.max() > s["test_end"]:
+        out.append("평가 자료 기간")
+    return out
+
+
+def model_mismatches(meta: dict, cfg: dict) -> list[str]:
+    train_path = ROOT / cfg["data"]["processed_dir"] / "train.csv"
+    out = []
+    if (meta.get("train_data") or {}).get("sha256") != sha256_file(train_path):
+        out.append("학습 자료")
+    if meta.get("params") != cfg["model"]["params"]:
+        out.append("하이퍼파라미터")
+    if meta.get("version") != cfg["model"]["version"]:
+        out.append("모델 버전")
+    if meta.get("features") != FEATURES or meta.get("feature_code_sha256") != sha256_file(FEATURE_CODE):
+        out.append("특성 코드")
+    return out
 
 
 def _part_summary(part: pd.DataFrame) -> dict:

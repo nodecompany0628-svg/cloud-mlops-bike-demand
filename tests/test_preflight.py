@@ -3,12 +3,9 @@ from bikeml.cloud import preflight_problems
 SHA = "a" * 64
 APP = {"lambda_function.py": "1", "bikeml/service.py": "2"}
 CRIT = {"must_beat_all_baselines": True, "min_mae_reduction_vs_hour_baseline": 0.3}
-PARAMS = {"loss": "poisson", "max_iter": 500}
-MODEL_CFG = {"version": "hgb-v1", "params": PARAMS}
 LAMBDA = {"runtime": "python3.12", "architecture": "x86_64"}
-META = {"model_sha256": SHA, "version": "hgb-v1", "params": PARAMS, "train_data": {"sha256": "tr"}}
 GOOD = dict(
-    model_meta=META,
+    model_meta={"model_sha256": SHA},
     model_file_sha=SHA,
     evaluation={"passed": True, "model": {"sha256": SHA}, "criteria": CRIT, "eval_data": {"sha256": "t"}},
     service_check={"all_passed": True, "model": {"sha256": SHA}, "app_files": APP},
@@ -18,8 +15,8 @@ GOOD = dict(
     requirements_sha="r",
     criteria=CRIT,
     test_sha="t",
-    train_sha="tr",
-    model_cfg=MODEL_CFG,
+    model_mismatch=[],
+    split_mismatch=[],
     lambda_cfg=LAMBDA,
 )
 
@@ -32,11 +29,11 @@ def test_all_good():
     assert problems() == []
 
 
-def test_model_gates():
+def test_model_and_data_gates():
     assert "metadata.json" in problems(model_file_sha="b" * 64)[0]
-    assert "학습 자료와 설정" in problems(train_sha="other")[0]
-    assert "학습 자료와 설정" in problems(model_cfg={**MODEL_CFG, "params": {**PARAMS, "max_iter": 5}})[0]
-    assert "학습 자료와 설정" in problems(model_cfg={**MODEL_CFG, "version": "hgb-v2"})[0]
+    assert "학습 자료" in problems(model_mismatch=["학습 자료"])[0]
+    assert "특성 코드" in problems(model_mismatch=["특성 코드"])[0]
+    assert "split" in problems(split_mismatch=["평가 자료 기간"])[0]
 
 
 def test_evaluation_gates():
