@@ -56,28 +56,28 @@
   "by_month": [
     {
       "m": "2012-09",
-      "n": 720.0,
+      "n": 720,
       "actual_mean": 303.6,
       "mae_model": 38.93,
       "mae_hour_baseline": 131.82
     },
     {
       "m": "2012-10",
-      "n": 708.0,
+      "n": 708,
       "actual_mean": 280.8,
       "mae_model": 50.17,
       "mae_hour_baseline": 115.75
     },
     {
       "m": "2012-11",
-      "n": 718.0,
+      "n": 718,
       "actual_mean": 212.6,
       "mae_model": 47.85,
       "mae_hour_baseline": 62.25
     },
     {
       "m": "2012-12",
-      "n": 742.0,
+      "n": 742,
       "actual_mean": 166.7,
       "mae_model": 53.04,
       "mae_hour_baseline": 70.31

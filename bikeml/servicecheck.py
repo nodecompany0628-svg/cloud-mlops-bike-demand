@@ -107,8 +107,11 @@ def run_cases(invoke, expected_model: dict, target: str, cfg: dict, secrets=()) 
             "meta": meta,
         })
     passed = sum(r["passed"] for r in results)
-    return {"target": target, "model": expected_model, "passed": passed, "total": len(results),
-            "all_passed": passed == len(results), "cases": results, "responses": responses}
+    runtime = next(((r.get("body") or {}).get("runtime") for r in responses.values()
+                    if (r.get("body") or {}).get("runtime")), None)
+    return {"target": target, "model": expected_model, "runtime": runtime, "passed": passed,
+            "total": len(results), "all_passed": passed == len(results), "cases": results,
+            "responses": responses}
 
 
 def sample_day_comparison(responses: dict, cfg: dict) -> dict | None:

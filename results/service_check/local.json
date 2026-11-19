@@ -2,10 +2,11 @@
   "target": "local",
   "model": {
     "version": "hgb-v1",
-    "sha256": "9911f56a01c312600ac0ce5101e811299274debd19ad6d077f2e6b8e090d47dd"
+    "sha256": "9911f56a01c312600ac0ce5101e811299274debd19ad6d077f2e6b8e090d47dd",
+    "sklearn": "1.9.1"
   },
-  "passed": 13,
-  "total": 13,
+  "passed": 12,
+  "total": 12,
   "all_passed": true,
   "cases": [
     {
@@ -28,7 +29,7 @@
         }
       ],
       "meta": {
-        "client_ms": 47.1
+        "client_ms": 50.0
       }
     },
     {
@@ -61,31 +62,7 @@
         }
       ],
       "meta": {
-        "client_ms": 4.3
-      }
-    },
-    {
-      "name": "http_body_string",
-      "about": "HTTP 연동 형태({\"body\": \"JSON 문자열\"})도 같은 결과",
-      "expect": {
-        "status": 200,
-        "n": 1,
-        "same_prediction_as": "normal_one_hour"
-      },
-      "status": 200,
-      "passed": true,
-      "problems": [],
-      "error": null,
-      "warnings": null,
-      "predictions_head": [
-        {
-          "datetime": "2012-10-01T08:00",
-          "predicted_count": 647,
-          "predicted_value": 646.93
-        }
-      ],
-      "meta": {
-        "client_ms": 5.2
+        "client_ms": 8.5
       }
     },
     {
@@ -112,7 +89,7 @@
         }
       ],
       "meta": {
-        "client_ms": 7.2
+        "client_ms": 7.0
       }
     },
     {
@@ -138,7 +115,7 @@
         }
       ],
       "meta": {
-        "client_ms": 5.8
+        "client_ms": 4.6
       }
     },
     {

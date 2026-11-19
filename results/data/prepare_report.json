@@ -36,7 +36,15 @@
     "season": "월(mnth)로 대신함, 원자료 정의(1=봄)가 실제 달력과 어긋남",
     "dteday, yr, mnth, weekday, workingday": "요청의 datetime, holiday 로 다시 계산(원자료 값과 일치 확인)"
   },
-  "derived_feature_mismatches": 0,
+  "derived_feature_mismatches": {
+    "yr": 0,
+    "mnth": 0,
+    "hr": 0,
+    "weekday": 0,
+    "workingday": 0,
+    "holiday": 0,
+    "weathersit": 0
+  },
   "split": {
     "rule": {
       "train_start": "2011-01-01",
