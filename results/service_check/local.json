@@ -3,7 +3,8 @@
   "model": {
     "version": "hgb-v1",
     "sha256": "f6186c0a881176ccb676683346571a8fa1c5fc52aa0a4cfd0c6768d241bfded0",
-    "sklearn": "1.9.1"
+    "sklearn": "1.9.1",
+    "numpy": "2.5.5"
   },
   "runtime": {
     "python": "3.12.13",
@@ -36,7 +37,7 @@
         }
       ],
       "meta": {
-        "client_ms": 62.2
+        "client_ms": 53.4
       }
     },
     {
@@ -69,7 +70,7 @@
         }
       ],
       "meta": {
-        "client_ms": 5.0
+        "client_ms": 4.7
       }
     },
     {
@@ -96,7 +97,7 @@
         }
       ],
       "meta": {
-        "client_ms": 5.6
+        "client_ms": 4.4
       }
     },
     {
@@ -122,7 +123,7 @@
         }
       ],
       "meta": {
-        "client_ms": 6.0
+        "client_ms": 4.1
       }
     },
     {
