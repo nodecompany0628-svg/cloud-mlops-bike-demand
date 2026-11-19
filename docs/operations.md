@@ -10,7 +10,7 @@
 2. README의 설치 명령
 3. `python -m pytest -q`
 4. `python -m bikeml --profile <프로필> run all`
-5. 결과를 원래 결과와 비교: 모델 sha256, MAE, 클라우드 응답
+5. 결과를 원래 결과와 비교: 지표(MAE 등)와 클라우드 응답. 같은 OS와 라이브러리면 모델 sha256도 같아야 한다
 
 ## 2. 접근 권한
 

@@ -20,7 +20,7 @@
 3. Lambda는 콜드 스타트 때 S3에서 고정된 객체 버전의 모델을 한 번 받아 sha256과 입력 개수를 확인하고, 이후 요청은 메모리의 모델로 예측한다.
 4. `smoke`: 검사 사례 12개를 같은 실행에서 `deploy`가 게시한 버전에 보낸다(`smoke`만 따로 실행하면 가장 최근에 게시된 버전).
 5. `cloud-eval`: 평가 자료 2,888건을 같은 버전에 500건씩 보내 예측을 받고 로컬 결과와 비교한다.
-6. `release`: 그 버전이 smoke와 cloud-eval을 모두 통과했을 때만 `live` 별칭을 그 버전으로 옮긴다. 버전 번호만 보지 않고, 검사 때 기록한 버전의 정체(리전, 리비전 ID, 코드 sha256, 모델 경로와 sha256)가 지금 버전과 모두 같은지 확인한다. 함수를 지웠다 다시 만들면 버전 번호가 1부터 다시 시작하므로 번호만으로는 같은 버전인지 알 수 없기 때문이다. 이전에 `live`가 가리키던 버전도 기록한다.
+6. `release`: 그 버전이 smoke와 cloud-eval을 모두 통과했을 때만 `live` 별칭을 그 버전으로 옮긴다. 버전 번호만 보지 않고, 실행 기록에서 버전의 정체(리전, 리비전 ID, 코드 sha256, 모델 경로와 sha256)가 같은 smoke와 cloud-eval의 가장 최근 기록이 둘 다 성공인지 확인한다. 같은 버전을 다시 검사해 실패했다면 옮기지 않는다. 함수를 지웠다 다시 만들면 버전 번호가 1부터 다시 시작하므로 번호만으로는 같은 버전인지 알 수 없기 때문이다. 이전에 `live`가 가리키던 버전도 기록한다.
 7. 응답과 기록은 PC의 `results/`, `runs/`에 남기고 Git에 올린다. 함수 로그는 CloudWatch Logs에 남는다.
 
 | 선택 | 이유 |
@@ -42,9 +42,11 @@
 
 | 파일 | 내용 |
 |---|---|
-| [config/pipeline.json](../config/pipeline.json) | 리전, 함수와 역할 이름, 버킷 접두어, 태그, 분할 기간, 하이퍼파라미터, 합격 기준. `cloud.bucket`을 적으면 그 버킷을 쓰는데, 이름이 `bike-demand-mlops-`로 시작하고 이 과제의 태그가 붙은 버킷이어야 한다. 버킷뿐 아니라 IAM 역할, Lambda 함수, 로그 그룹도 이 과제의 태그(`project`, `owner`)가 없으면 배포, release, 정리에서 건드리지 않고 멈춘다. 예외로, 이름이 `bike-demand-mlops-<리전>-<16진수 8자리>` 형식이고 태그도 객체도 없는 빈 버킷은 이 도구가 버킷을 만든 직후 태그를 붙이기 전에 멈춰 남은 것으로 보고, 배포는 태그를 붙여 이어받고 정리는 지운다 |
+| [config/pipeline.json](../config/pipeline.json) | 리전, 함수와 역할 이름, 버킷 접두어, 태그, 분할 기간, 학습 스레드 수, 하이퍼파라미터, 합격 기준. `cloud.bucket`을 적으면 그 버킷을 쓴다(이름이 `bike-demand-mlops-`로 시작하고 이 과제의 태그가 있어야 함) |
 | [config/lambda.json](../config/lambda.json) | 런타임, 메모리, 제한 시간, 임시 저장소, 예약 동시성, 로그 보관 일수 |
 | Lambda 환경 변수 | `MODEL_URI`(S3 경로와 객체 버전), `MODEL_VERSION`, `MODEL_SHA256`, `JOBLIB_MULTIPROCESSING=0` |
+
+자원 구분: 버킷, IAM 역할, Lambda 함수, 로그 그룹은 이 과제의 태그(`project`, `owner`)가 있을 때만 배포, release, 정리에서 바꾸거나 지운다. 예외는 이름이 `bike-demand-mlops-<리전>-<16진수 8자리>` 형식이고 태그도 객체도 없는 빈 버킷이다. 이 도구가 버킷을 만든 직후 태그를 붙이기 전에 멈춰 남은 것으로 보고, 배포는 태그를 붙여 이어받고 정리는 지운다.
 
 `JOBLIB_MULTIPROCESSING=0`을 두는 이유: Lambda에는 /dev/shm이 없어 joblib을 불러올 때 경고가 난다. 예측은 한 프로세스에서 하므로 joblib 병렬 처리를 끈다.
 
@@ -120,7 +122,7 @@ Lambda는 S3에서 받은 코드의 사본을 따로 보관한다(기본 저장 
 - 각 단계는 결과를 임시 폴더에 먼저 쓴다. 성공하면 제자리(`results/`, `models/` 등)로 옮긴다. 옮기다 실패하거나 Ctrl+C로 멈추면 이미 옮긴 파일을 원래대로 되돌린다.
 - 단계가 실패하면 결과를 `results/failed/<run_id>_<단계>/`로 옮긴다. 정상 결과를 덮어쓰지 않고, 오류 추적은 그 폴더의 `error.txt`에 남는다. Ctrl+C로 멈춘 경우도 실패로 기록한다.
 - 한 단계가 실패하면 뒤 단계는 실행하지 않고 `skipped`로 기록한다.
-- 외부 모델은 쓰지 않는다. Lambda 런타임에 들어 있는 boto3는 AWS가 관리해서 버전을 고정할 수 없다. 대신 응답의 `runtime`과 서비스 검사 결과의 `runtime`에 실제 버전이 기록된다. 이 boto3는 모델 파일을 내려받는 데만 쓴다.
+- 외부 모델은 쓰지 않는다. boto3는 zip에 넣지 않고 Lambda 런타임에 들어 있는 것을 쓰기로 했다(모델 파일을 내려받는 데만 쓰므로 패키지를 키우지 않으려고). 그래서 boto3 버전은 AWS가 정하며, 응답의 `runtime`과 서비스 검사 결과의 `runtime`에 실제 버전이 기록된다.
 
 실패 처리 예시 (AWS 없이 실행함)
 
@@ -132,14 +134,14 @@ python -m bikeml --config config/demo_strict_criteria.json run evaluate check-lo
 
 | 항목 | 결과 |
 |---|---|
-| run_id | `20261119T232843-0c4694` |
+| run_id | `20261119T235655-4177b4` |
 | evaluate | failed. `RuntimeError: 합격 기준 미달: {'beats_all_baselines': True, 'mae_reduction_vs_hour_baseline': 0.499, 'meets_reduction': False}` |
 | check-local | skipped (`이전 단계 실패로 실행하지 않음: evaluate`) |
-| 실패한 결과 | `results/failed/20261119T232843-0c4694_evaluate/` (metrics.json의 `passed: false`, error.txt) |
+| 실패한 결과 | `results/failed/20261119T235655-4177b4_evaluate/` (metrics.json의 `passed: false`, error.txt) |
 | 정상 결과 | `results/evaluation/metrics.json`은 그대로 (`passed: true`, 기준 0.3). 후보 모델은 `models/hgb-v1/`로 옮겨지지 않았다 |
 | 배포 | 정상 설정으로는 배포 전 확인을 통과한다. 엄격한 설정으로 `deploy`를 실행하면 "evaluate 이후 합격 기준이나 평가 자료가 바뀜"으로 멈춘다 |
 
-같은 설정으로 이전 코드에서 실행한 기록(`20261119T212432-8dab61`, `20261119T215025-2b3b55`, `20261119T221433-76275e`, `20261119T223856-cfa909`, `20261119T230144-db75ff`)도 `results/failed/`에 남아 있다.
+같은 설정으로 이전 코드에서 실행한 기록(`20261119T212432-8dab61`, `20261119T215025-2b3b55`, `20261119T221433-76275e`, `20261119T223856-cfa909`, `20261119T230144-db75ff`, `20261119T232843-0c4694`, `20261119T235636-890eb9`)도 `results/failed/`에 남아 있다. 마지막 것은 테스트 파일을 고치고 커밋하기 전에 실행해 `code_dirty: true`로 기록된 것이다.
 
 ## 5. 오류 재현과 복구
 
