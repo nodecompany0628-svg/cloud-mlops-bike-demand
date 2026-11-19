@@ -29,9 +29,9 @@
 | 직접 호출 (`lambda:InvokeFunction`), 공개 주소 없음 | 사용자가 담당자 몇 명뿐이라 공개 HTTP 주소를 열 이유가 없다. IAM 권한이 있는 사람만 호출할 수 있어 인증을 따로 만들지 않았다 |
 | `live` 별칭 | 사용자는 `live`로 호출한다. `live`는 smoke와 cloud-eval을 모두 통과한 버전만 가리키므로, 배포나 검사 도중 실패해 `$LATEST`나 새 버전이 어중간한 상태여도 사용자 호출에는 영향이 없다 |
 | 모델은 S3에 두고 실행할 때 내려받음 | 모델 버전을 코드 패키지와 따로 관리한다. 모델 경로에 모델 sha256 앞 12자리를 넣어(`models/hgb-v1/<sha12>/model.joblib`) 내용이 다른 모델은 다른 객체가 되게 하고, Lambda 환경 변수 `MODEL_URI`에 S3 객체 버전 ID까지 적는다(`...model.joblib?versionId=...`). 그래서 다시 학습해 올려도 이미 게시한 Lambda 버전이나 `live`가 가리키는 모델 파일은 덮이거나 수명 주기 규칙으로 지워지지 않는다 |
-| 같은 파일은 다시 올리지 않음 | 업로드 전에 S3의 현재 객체에 적힌 sha256을 보고, 같으면 그 객체 버전을 그대로 쓴다. 함수 설정의 설명은 고정 문구이고 커밋 정보는 버전 설명에만 넣는다. 그래서 모델, 코드, 설정이 그대로면 Lambda 설정도 그대로이고, AWS가 새 버전 번호를 만들지 않고 기존 번호를 돌려준다 |
+| 같은 파일은 다시 올리지 않음 | 업로드 전에 S3의 현재 객체에 적힌 sha256을 보고, 같으면 그 객체 버전을 그대로 쓴다. 함수 설정의 설명은 고정 문구이고 커밋 정보는 버전 설명에만 넣는다. 그래서 모델, 코드, 설정이 그대로면 Lambda 설정도 그대로다. 이 경우 AWS 문서에 따르면 PublishVersion은 새 번호를 만들지 않고 기존 번호를 돌려주며, 버전 설명은 처음 게시할 때의 커밋으로 남는다. 이번 배포의 커밋은 `deploy.json`과 실행 기록에 남는다. 이 동작은 실제 AWS에서 확인할 부분이다(moto는 매번 새 번호를 만든다) |
 | 버전 관리 반영 대기 | AWS 문서는 버킷에서 버전 관리를 처음 켠 뒤 반영에 최대 15분이 걸릴 수 있다고 한다. 업로드 결과에 객체 버전이 없거나 그 버전을 읽지 못하면 30초 간격으로 최대 30번(15분) 다시 올린다 |
-| zip 패키지 (컨테이너 이미지 아님) | 이 PC에 Docker가 없다. scikit-learn, scipy, numpy의 리눅스용 휠을 `pip --platform manylinux...`로 받아 zip을 만든다. Lambda는 코드 폴더(/var/task)에 쓸 수 없어 콜드 스타트마다 라이브러리를 다시 컴파일하게 되므로 .pyc를 미리 만들어 넣는다. Python 3.12에서 빌드할 때만 만들고, 해시 기반 무효화를 쓰며, 소스 경로는 `/var/task/...`로 기록한다. 압축 해제 198.94MB로 Lambda 한도 250MB 안이다. zip이 직접 업로드 한도 50MB를 넘어 S3를 거쳐 올린다 |
+| zip 패키지 (컨테이너 이미지 아님) | 이 PC에 Docker가 없다. scikit-learn, scipy, numpy의 리눅스용 휠을 `pip --platform manylinux...`로 받아 zip을 만든다. Lambda는 코드 폴더(/var/task)에 쓸 수 없어 콜드 스타트마다 라이브러리를 다시 컴파일하게 되므로 .pyc를 미리 만들어 넣는다. Python 3.12에서 빌드할 때만 만들고, 소스와 대조하지 않는 방식(unchecked-hash)을 써서 압축 해제 시각과 상관없이 그대로 쓰이게 하며, 소스 경로는 `/var/task/...`로 기록한다. /var/task는 읽기 전용이라 소스가 바뀔 일이 없다. 컴파일한 수와 실패한 파일은 `package.json`에 남는다. 압축 해제 198.94MB로 Lambda 한도 250MB 안이다. zip이 직접 업로드 한도 50MB를 넘어 S3를 거쳐 올린다 |
 | python3.12, x86_64 | 로컬 학습 환경과 같은 Python, 라이브러리 버전으로 맞춰 저장한 모델을 그대로 불러온다. python3.12 런타임은 Amazon Linux 2023(glibc 2.34) 기반이라 manylinux_2_28 휠이 동작한다. AWS 런타임 표 기준 지원 종료는 2028-10-31이다 |
 | 서울 리전 | 사용자(한국)와 가깝고 필요한 서비스가 모두 있다. 데이터가 공개 자료라 위치 제약이 없다 |
 | 메모리 1024MB, 제한 시간 30초 | 메모리를 늘리면 CPU도 비례해서 늘어 scikit-learn을 불러오는 콜드 스타트가 빨라진다. 실제 사용량은 실행 후 REPORT 로그로 확인한다 |
@@ -79,7 +79,7 @@ Lambda 실행 역할 `bike-demand-predict-role`의 권한은 두 가지뿐이다
 
 Lambda는 S3에서 받은 코드의 사본을 따로 보관한다(기본 저장 방식). 그래서 수명 주기 규칙으로 `packages/`의 zip이 지워져도 배포된 함수에는 영향이 없다.
 
-`deploy`는 자원을 만들기 전에 계정(sha256 해시)과 리전을 `.state/regions.json`(Git 제외)에 적는다. `status`와 `cleanup`은 지금 리전, 이 파일에서 같은 계정의 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전을 모두 조회하고 정리한다. 다른 계정의 배포 기록이 남아 있으면 `cleanup`은 실패로 기록하고 그 계정의 프로필로 다시 실행하라고 알린다. 다른 리전에서 배포하다 중간에 실패해 남은 자원도 놓치지 않기 위해서다. IAM 역할은 리전과 상관없는 자원이라 모든 리전을 정리한 뒤 마지막에 지우고, 역할의 인라인 정책은 리전마다 따로 둔다.
+`deploy`는 자원을 만들기 전에 계정과 리전을 `.state/regions.json`(Git 제외)에 적는다. 계정 ID는 그대로 적지 않고, 이 PC에서 만든 임의 키(`.state/local_key`, Git 제외)로 HMAC-SHA256을 계산한 값만 적는다. `status`와 `cleanup`은 지금 리전, 이 파일에서 같은 계정의 리전, 배포 기록(`results/cloud/deploy.json`, `deploy_override.json`)의 리전을 모두 조회하고 정리한다. 다른 계정의 배포 기록이 남아 있으면 `cleanup`은 실패로 기록하고 그 계정의 프로필로 다시 실행하라고 알린다. 다른 리전에서 배포하다 중간에 실패해 남은 자원도 놓치지 않기 위해서다. IAM 역할은 리전과 상관없는 자원이라 모든 리전을 정리한 뒤 마지막에 지우고, 역할의 인라인 정책은 리전마다 따로 둔다.
 
 공개 저장소에 계정 정보가 남지 않게 했다([bikeml/runlog.py](../bikeml/runlog.py)의 `sanitize`).
 - 버킷 이름에는 계정 ID 대신 임의 문자열을 넣는다. 다음 실행부터는 같은 접두어의 버킷을 목록에서 찾아 쓴다.
@@ -132,14 +132,14 @@ python -m bikeml --config config/demo_strict_criteria.json run evaluate check-lo
 
 | 항목 | 결과 |
 |---|---|
-| run_id | `20261119T230144-db75ff` |
+| run_id | `20261119T232843-0c4694` |
 | evaluate | failed. `RuntimeError: 합격 기준 미달: {'beats_all_baselines': True, 'mae_reduction_vs_hour_baseline': 0.499, 'meets_reduction': False}` |
 | check-local | skipped (`이전 단계 실패로 실행하지 않음: evaluate`) |
-| 실패한 결과 | `results/failed/20261119T230144-db75ff_evaluate/` (metrics.json의 `passed: false`, error.txt) |
+| 실패한 결과 | `results/failed/20261119T232843-0c4694_evaluate/` (metrics.json의 `passed: false`, error.txt) |
 | 정상 결과 | `results/evaluation/metrics.json`은 그대로 (`passed: true`, 기준 0.3). 후보 모델은 `models/hgb-v1/`로 옮겨지지 않았다 |
 | 배포 | 정상 설정으로는 배포 전 확인을 통과한다. 엄격한 설정으로 `deploy`를 실행하면 "evaluate 이후 합격 기준이나 평가 자료가 바뀜"으로 멈춘다 |
 
-같은 설정으로 이전 코드에서 실행한 기록(`20261119T212432-8dab61`, `20261119T215025-2b3b55`, `20261119T221433-76275e`, `20261119T223856-cfa909`)도 `results/failed/`에 남아 있다.
+같은 설정으로 이전 코드에서 실행한 기록(`20261119T212432-8dab61`, `20261119T215025-2b3b55`, `20261119T221433-76275e`, `20261119T223856-cfa909`, `20261119T230144-db75ff`)도 `results/failed/`에 남아 있다.
 
 ## 5. 오류 재현과 복구
 

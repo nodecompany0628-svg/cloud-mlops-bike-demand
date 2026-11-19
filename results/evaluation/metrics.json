@@ -9,6 +9,7 @@
     "path": "data/processed/test.csv",
     "sha256": "e634352180e336bcd3fbd1d819e624dd8e9ff5b2598681a594d21fa4b69691ba",
     "rows": 2888,
+    "excluded_missing_humidity": 0,
     "first": "2012-09-01T00:00",
     "last": "2012-12-31T23:00",
     "actual_mean": 240.23
