@@ -49,7 +49,7 @@ def main(argv=None) -> int:
 
     p = argparse.ArgumentParser(prog="python -m bikeml", description="자전거 대여량 예측 MLOps 파이프라인")
     p.add_argument("--config", default=str(DEFAULT_CONFIG), help="파이프라인 설정 파일")
-    p.add_argument("--profile", default=None, help="AWS 프로필 (기본: AWS_PROFILE 환경 변수 또는 기본 자격 증명)")
+    p.add_argument("--profile", default=None, help="AWS 프로필 (없으면 AWS_PROFILE 환경 변수, 설정의 cloud.profile 순. 모두 없으면 BIKEML_USE_ENV_CREDENTIALS=1 일 때만 환경 변수 키 사용)")
     p.add_argument("--region", default=None, help="AWS 리전 (기본: 설정 파일의 ap-northeast-2)")
     p.add_argument("--lambda-config", default=None, help="Lambda 설정 파일 (기본: config/lambda.json)")
     sub = p.add_subparsers(dest="cmd", required=True)

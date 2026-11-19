@@ -267,11 +267,25 @@ def _cleanup_staging(run_id: str) -> None:
         pass
 
 
+def read_run_log() -> tuple[list[dict], int]:
+    if not RUN_LOG.exists():
+        return [], 0
+    records, broken = [], 0
+    for line in RUN_LOG.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            broken += 1
+    return records, broken
+
+
 def print_runs(limit: int = 30) -> None:
     if not RUN_LOG.exists():
         print("실행 기록이 없습니다")
         return
-    rows = [json.loads(line) for line in RUN_LOG.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows, _ = read_run_log()
     print(f"{'run_id':24} {'step':12} {'status':8} {'commit':8} {'model':8} {'finished_at':26} error")
     for r in rows[-limit:]:
         commit = ((r.get("git") or {}).get("commit") or "")[:7]

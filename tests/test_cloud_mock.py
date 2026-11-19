@@ -129,7 +129,7 @@ def test_cloud_steps_end_to_end(sandbox):
     assert ev["metrics_cloud"]["mae"] == ev["metrics_local"]["mae"]
 
     status = read(sandbox, "results/cloud/status.json")
-    assert status["resources"]["iam_role"]["exists"] is True
+    assert status["resources"]["iam_role"]["exists"] is True and status["regions_unreachable"] == []
     assert all(v["exists"] is True for v in regional(status["resources"]).values())
     assert regional(status["resources"])["lambda_function"]["alias_live"] == release["function_version"]
     assert status["other_account_regions"] == []
@@ -397,3 +397,51 @@ def test_configured_bucket_in_other_region_is_refused(sandbox):
         s3.create_bucket(Bucket=name, CreateBucketConfiguration={"LocationConstraint": "us-west-2"})
         rc = runlog.run_steps(["deploy"], STEPS, cfg, make_args(steps=["deploy"]), DEFAULT_CONFIG)
     assert rc == 1 and "리전" in records(sandbox)[-1]["error"]
+
+
+def test_role_policy_covers_all_project_buckets(sandbox):
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        iam = boto3.client("iam", region_name="ap-northeast-2")
+        doc = iam.get_role_policy(RoleName="bike-demand-predict-role", PolicyName="bike-demand-predict-ap-northeast-2")
+    stmt = next(s for s in doc["PolicyDocument"]["Statement"] if s["Sid"] == "ReadModels")
+    assert stmt["Resource"] == "arn:aws:s3:::bike-demand-mlops-*/models/*"
+
+
+def test_cleanup_fails_and_keeps_role_when_own_region_unreachable(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    real_init = cloud.Cloud.__init__
+    with mock_aws():
+        assert run(["deploy"], region="us-west-2") == 0
+
+        def init(self, cfg, args, ctx=None, region=None):
+            if region == "us-west-2":
+                raise RuntimeError("region not enabled")
+            real_init(self, cfg, args, ctx, region)
+        monkeypatch.setattr(cloud.Cloud, "__init__", init)
+        rc = run(["cleanup"])
+        roles = [r["RoleName"] for r in boto3.client("iam", region_name="ap-northeast-2").list_roles()["Roles"]]
+    recs = records(sandbox)
+    assert rc == 1 and "us-west-2" in recs[-1]["error"] and "bike-demand-predict-role" in roles
+
+
+def test_blank_run_log_line_is_tolerated_but_broken_line_blocks_release(sandbox):
+    with mock_aws():
+        assert run(["deploy", "smoke", "cloud-eval"]) == 0
+        with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
+            f.write("\n")
+        assert run(["status"]) == 0
+        with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
+            f.write('{"run_id": "broken"\n')
+        rc = run(["release"])
+    assert rc == 1 and "읽을 수 없는 줄" in records_tolerant(sandbox)[-1]["error"]
+
+
+def records_tolerant(tmp_path):
+    out = []
+    for line in (tmp_path / "runs" / "run_log.jsonl").read_text(encoding="utf-8").splitlines():
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+    return out

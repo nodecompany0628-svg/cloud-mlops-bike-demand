@@ -219,7 +219,7 @@ class Cloud:
                  "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
                  "Resource": f"arn:aws:logs:{self.region}:{self.account}:log-group:{self.log_group}:*"},
                 {"Sid": "ReadModels", "Effect": "Allow", "Action": ["s3:GetObject", "s3:GetObjectVersion"],
-                 "Resource": f"arn:aws:s3:::{self.bucket}/models/*"},
+                 "Resource": f"arn:aws:s3:::{self.bucket_base}-*/models/*"},
             ],
         }
 
@@ -586,16 +586,10 @@ def other_account_regions(account: str) -> list[str]:
 
 
 def run_log_regions() -> set[str]:
-    from . import runlog
+    from .runlog import read_run_log
 
-    if not runlog.RUN_LOG.exists():
-        return set()
-    regions = set()
-    for line in runlog.RUN_LOG.read_text(encoding="utf-8").splitlines():
-        region = ((json.loads(line).get("cloud") or {}).get("region"))
-        if region:
-            regions.add(region)
-    return regions
+    records, _ = read_run_log()
+    return {r["cloud"]["region"] for r in records if (r.get("cloud") or {}).get("region")}
 
 
 def known_regions(cfg: dict, args, account: str) -> list[str]:
@@ -825,13 +819,13 @@ def step_cloud_eval(ctx) -> None:
 
 
 def last_status(step: str, identity: dict) -> str | None:
-    from . import runlog
+    from .runlog import read_run_log
 
-    if not runlog.RUN_LOG.exists():
-        return None
+    records, broken = read_run_log()
+    if broken:
+        raise RuntimeError(f"실행 기록에 읽을 수 없는 줄이 {broken}개 있어 검사 결과를 확인할 수 없습니다")
     status = None
-    for line in runlog.RUN_LOG.read_text(encoding="utf-8").splitlines():
-        rec = json.loads(line)
+    for rec in records:
         if rec.get("step") == step and (rec.get("cloud") or {}).get("identity") == identity:
             status = rec.get("status")
     return status
@@ -858,13 +852,19 @@ def step_release(ctx) -> None:
     ctx.summary = {"live": version, "previous_live": previous}
 
 
-def _clouds(ctx) -> list[Cloud]:
+def _clouds(ctx) -> tuple[list[Cloud], list[dict]]:
     first = Cloud(ctx.cfg, ctx.args, ctx)
-    regions = set(known_regions(ctx.cfg, ctx.args, first.account)) | first.bucket_regions()
+    own = first.bucket_regions() | {d["region"] for d in deployments() if d["account"] == account_key(first.account)}
     if first.configured_region:
-        regions.add(first.configured_region)
-    others = sorted(r for r in regions if r != first.region)
-    return [first] + [Cloud(ctx.cfg, ctx.args, ctx, region=r) for r in others]
+        own.add(first.configured_region)
+    regions = set(known_regions(ctx.cfg, ctx.args, first.account)) | own
+    clouds, unreachable = [first], []
+    for r in sorted(regions - {first.region}):
+        try:
+            clouds.append(Cloud(ctx.cfg, ctx.args, ctx, region=r))
+        except Exception as e:
+            unreachable.append({"region": r, "own": r in own, "error": f"{type(e).__name__}: {e}"})
+    return clouds, unreachable
 
 
 def _status_all(clouds: list[Cloud]) -> dict:
@@ -876,9 +876,10 @@ def step_status(ctx) -> None:
     name = getattr(ctx.args, "status_name", None) or "status"
     if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
         raise RuntimeError(f"--status-name 에는 영문, 숫자, _, - 만 쓸 수 있습니다: {name}")
-    clouds = _clouds(ctx)
+    clouds, unreachable = _clouds(ctx)
     resources = _status_all(clouds)
     st = {"checked_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
+          "regions_unreachable": unreachable,
           "other_account_regions": other_account_regions(clouds[0].account), "resources": resources}
     write_json(ctx.out(f"results/cloud/{name}.json"), st)
     ctx.cloud = {**clouds[0].info(), "regions_checked": st["regions_checked"]}
@@ -888,10 +889,10 @@ def step_status(ctx) -> None:
 
 
 def step_cleanup(ctx) -> None:
-    clouds = _clouds(ctx)
+    clouds, unreachable = _clouds(ctx)
     before = _status_all(clouds)
     deleted = [d for c in clouds for d in c.cleanup_regional()]
-    if all(d["result"] in ("deleted", "not_found") for d in deleted):
+    if all(d["result"] in ("deleted", "not_found") for d in deleted) and not any(u["own"] for u in unreachable):
         deleted += clouds[0].cleanup_role()
     else:
         deleted.append({"resource": f"iam:{clouds[0].role}", "result": "kept: 남은 지역 자원이 이 역할을 쓸 수 있어 지우지 않음"})
@@ -902,15 +903,16 @@ def step_cleanup(ctx) -> None:
         time.sleep(STATUS_WAIT_S)
         after = _status_all(clouds)
     others = other_account_regions(clouds[0].account)
+    own_unreachable = [u["region"] for u in unreachable if u["own"]]
     report = {"cleaned_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
-              "before": before, "actions": deleted, "after": after, "all_gone": all_gone(after),
-              "other_account_regions": others}
+              "regions_unreachable": unreachable, "before": before, "actions": deleted, "after": after,
+              "all_gone": all_gone(after) and not own_unreachable, "other_account_regions": others}
     write_json(ctx.out("results/cloud/cleanup.json"), report)
     ctx.cloud = {**clouds[0].info(), "regions_checked": report["regions_checked"]}
     ctx.summary = {"all_gone": report["all_gone"], "actions": {d["resource"]: d["result"] for d in deleted},
                    "other_account_regions": others}
     if not report["all_gone"]:
-        raise RuntimeError(f"남은 자원이 있거나 확인하지 못했습니다: {after}")
+        raise RuntimeError(f"남은 자원이 있거나 확인하지 못했습니다(접속하지 못한 리전 {own_unreachable}): {after}")
     forget_account(clouds[0].account)
     if others:
         raise RuntimeError(f"이 계정의 자원은 모두 지웠지만, 다른 계정에서 배포한 기록이 남아 있습니다(리전 {others}). "

@@ -92,6 +92,7 @@
         "logs:PutRetentionPolicy",
         "logs:TagResource",
         "logs:TagLogGroup",
+        "logs:DescribeLogStreams",
         "logs:FilterLogEvents",
         "logs:GetLogEvents",
         "logs:DeleteLogGroup",
