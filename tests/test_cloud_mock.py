@@ -559,7 +559,8 @@ def test_configured_bucket_left_untagged_is_adopted(sandbox):
     runlog.RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
     with open(runlog.RUN_LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps({"run_id": "x", "step": "deploy", "status": "failed",
-                            "cloud": {"region": "ap-northeast-2", "bucket": "bike-demand-mlops-mine"}}) + "\n")
+                            "cloud": {"region": "ap-northeast-2", "bucket": "bike-demand-mlops-mine",
+                                      "creating_bucket": "bike-demand-mlops-mine"}}) + "\n")
     with mock_aws():
         boto3.client("s3", region_name="ap-northeast-2").create_bucket(
             Bucket="bike-demand-mlops-mine", CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"})
@@ -811,24 +812,58 @@ def test_status_records_unknown_role_state(sandbox, monkeypatch):
     assert rc == 1 and status["resources"]["iam_role"] == {"exists": None, "error": "AccessDenied"}
 
 
+def renamed_config():
+    cfg = load_config()
+    cfg["cloud"]["function_name"] = "bike-demand-predict-2"
+    return cfg
+
+
+def run_with(cfg, step):
+    return runlog.run_steps([step], STEPS, cfg, make_args(steps=[step]), DEFAULT_CONFIG)
+
+
 def test_renamed_config_requires_cleanup_with_old_names(sandbox, monkeypatch):
     monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
-    renamed = load_config()
-    renamed["cloud"]["function_name"] = "bike-demand-predict-2"
-
-    def run_renamed(step):
-        return runlog.run_steps([step], STEPS, renamed, make_args(steps=[step]), DEFAULT_CONFIG)
+    renamed = renamed_config()
     with mock_aws():
         assert run(["deploy"]) == 0
-        rc_deploy = run_renamed("deploy")
-        rc_status = run_renamed("status")
-        rc_new = run_renamed("cleanup")
+        rc_deploy = run_with(renamed, "deploy")
+        rc_status = run_with(renamed, "status")
+        rc_new = run_with(renamed, "cleanup")
         functions = [f["FunctionName"] for f in boto3.client("lambda", region_name="ap-northeast-2").list_functions()["Functions"]]
-        roles = [r["RoleName"] for r in boto3.client("iam", region_name="ap-northeast-2").list_roles()["Roles"]]
+        buckets = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
         rc_old = run(["cleanup"])
-        rc_after = run_renamed("status")
+        rc_after = run_with(renamed, "status")
+        rc_new_deploy = run_with(renamed, "deploy")
     recs = records(sandbox)
     assert rc_deploy == 1 and "이전 이름" in recs[1]["error"] and recs[1]["cloud"] is None
-    assert rc_status == 1 and rc_new == 1 and "이전 이름" in recs[3]["error"]
-    assert functions == ["bike-demand-predict"] and roles == ["bike-demand-predict-role"]
-    assert rc_old == 0 and rc_after == 0
+    assert rc_status == 1 and rc_new == 1 and "아무것도 지우지 않았습니다" in recs[3]["error"]
+    assert functions == ["bike-demand-predict"] and len(buckets) == 1
+    assert rc_old == 0 and rc_after == 0 and rc_new_deploy == 0
+
+
+def test_deploy_refused_by_checks_does_not_block_renaming(sandbox):
+    with mock_aws():
+        boto3.client("logs", region_name="ap-northeast-2").create_log_group(logGroupName="/aws/lambda/bike-demand-predict")
+        assert run(["deploy"]) == 1
+        rc = run_with(renamed_config(), "deploy")
+    assert rc == 0, records(sandbox)[-1].get("error")
+
+
+def test_status_record_does_not_make_user_bucket_adoptable(sandbox):
+    cfg = load_config()
+    cfg["cloud"]["bucket"] = "bike-demand-mlops-users-own"
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="ap-northeast-2")
+        s3.create_bucket(Bucket="bike-demand-mlops-users-own",
+                         CreateBucketConfiguration={"LocationConstraint": "ap-northeast-2"})
+        run_with(cfg, "status")
+        rc_first = run_with(cfg, "deploy")
+        rc_second = run_with(cfg, "deploy")
+        run_with(cfg, "cleanup")
+        left = [b["Name"] for b in s3.list_buckets()["Buckets"]]
+        try:
+            tags = s3.get_bucket_tagging(Bucket="bike-demand-mlops-users-own")["TagSet"]
+        except ClientError:
+            tags = []
+    assert rc_first == 1 and rc_second == 1 and left == ["bike-demand-mlops-users-own"] and tags == []

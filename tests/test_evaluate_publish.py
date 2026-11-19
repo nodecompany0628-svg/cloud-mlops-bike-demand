@@ -75,6 +75,7 @@ def test_candidate_whose_file_disagrees_with_metadata_is_not_used(isolated):
     assert run_evaluate() == 0
     metrics = json.loads((root / "results" / "evaluation" / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["model_source"] == "published"
+    assert metrics["models_not_used"] == ["candidate: 모델 파일의 하이퍼파라미터"]
 
 
 def test_passing_candidate_is_published(isolated):
@@ -106,7 +107,7 @@ def test_stale_candidate_falls_back_to_matching_published_model(isolated):
 
     assert run_evaluate() == 0
     metrics = json.loads((root / "results" / "evaluation" / "metrics.json").read_text(encoding="utf-8"))
-    assert metrics["model_source"] == "published"
+    assert metrics["model_source"] == "published" and metrics["models_not_used"] == ["candidate: 학습 자료"]
     assert sha256_file(published / "model.joblib") == before
 
 
