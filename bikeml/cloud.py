@@ -79,6 +79,9 @@ class Cloud:
     def __init__(self, cfg: dict, args, ctx=None, region: str | None = None):
         self.cfg = cfg
         c = cfg["cloud"]
+        self.tags = c.get("tags", {})
+        if not self.tags:
+            raise RuntimeError("config 의 cloud.tags 가 비어 있으면 이 과제의 자원을 구분할 수 없습니다")
         self.profile = resolve_profile(cfg, getattr(args, "profile", None))
         self.region = region or resolve_region(cfg, getattr(args, "region", None))
         self.session = make_session(self.profile, self.region)
@@ -93,9 +96,6 @@ class Cloud:
         self.boundary_name = c["permissions_boundary"]
         self.bucket_prefix = f"{c['bucket_prefix']}-{self.region}-"
         self.log_group = f"/aws/lambda/{self.fn}"
-        self.tags = c.get("tags", {})
-        if not self.tags:
-            raise RuntimeError("config 의 cloud.tags 가 비어 있으면 이 과제의 자원을 구분할 수 없습니다")
         self.s3 = self.session.client("s3")
         self.iam = self.session.client("iam")
         self.lam = self.session.client("lambda")
@@ -226,20 +226,26 @@ class Cloud:
         self.s3.put_bucket_tagging(Bucket=self.bucket, Tagging={
             "TagSet": [{"Key": k, "Value": v} for k, v in self.tags.items()]})
 
-    def ensure_bucket(self, on_name=None) -> str:
+    def check_bucket(self) -> dict | None:
         if self.configured and self.configured_region not in (None, self.region):
             raise RuntimeError(f"cloud.bucket {self.configured} 의 리전({self.configured_region})이 "
                                f"지금 리전({self.region})과 다릅니다")
         if not self.configured and len(self.buckets) > 1:
             raise RuntimeError(f"버킷이 여러 개입니다 {self.buckets}. cleanup 으로 정리하거나 "
                                "config/pipeline.json 의 cloud.bucket 에 하나를 적으세요")
-        if self.bucket and (not self.configured or self.configured_region == self.region):
-            self.s3.head_bucket(Bucket=self.bucket)
-            tags = self.bucket_tags()
+        if not (self.bucket and (not self.configured or self.configured_region == self.region)):
+            return None
+        self.s3.head_bucket(Bucket=self.bucket)
+        tags = self.bucket_tags()
+        if not self.ours(tags) and not self.leftover_bucket(tags):
+            self.require_ours(f"버킷 {self.bucket}", tags)
+        return tags
+
+    def ensure_bucket(self, on_name=None) -> str:
+        tags = self.check_bucket()
+        if tags is not None:
             created = "exists"
             if not self.ours(tags):
-                if not self.leftover_bucket(tags):
-                    self.require_ours(f"버킷 {self.bucket}", tags)
                 self.tag_bucket()
                 created = "adopted"
         else:
@@ -277,15 +283,20 @@ class Cloud:
             ],
         }
 
-    def ensure_role(self) -> str:
-        created = False
+    def check_role(self) -> bool:
         try:
             role = self.iam.get_role(RoleName=self.role)["Role"]
-            self.require_ours(f"IAM 역할 {self.role}", self.role_tags())
-            if (role.get("PermissionsBoundary") or {}).get("PermissionsBoundaryArn") != self.boundary_arn():
-                raise RuntimeError(f"IAM 역할 {self.role} 에 권한 경계 {self.boundary_name} 이 없습니다. "
-                                   "cleanup 후 다시 배포하세요")
         except self.iam.exceptions.NoSuchEntityException:
+            return False
+        self.require_ours(f"IAM 역할 {self.role}", self.role_tags())
+        if (role.get("PermissionsBoundary") or {}).get("PermissionsBoundaryArn") != self.boundary_arn():
+            raise RuntimeError(f"IAM 역할 {self.role} 에 권한 경계 {self.boundary_name} 이 없습니다. "
+                               "cleanup 후 다시 배포하세요")
+        return True
+
+    def ensure_role(self) -> str:
+        created = False
+        if not self.check_role():
             self.iam.create_role(RoleName=self.role, AssumeRolePolicyDocument=json.dumps(LAMBDA_TRUST),
                                  Description="bike-demand-predict Lambda execution role",
                                  PermissionsBoundary=self.boundary_arn(),
@@ -598,9 +609,18 @@ class Cloud:
             return done
 
         def del_boundary():
+            from botocore.exceptions import ClientError
+
             tags = {t["Key"]: t["Value"] for t in self.iam.list_policy_tags(PolicyArn=self.boundary_arn())["Tags"]}
             self.require_ours(f"권한 경계 정책 {self.boundary_name}", tags)
-            self.iam.delete_policy(PolicyArn=self.boundary_arn())
+            for attempt in range(1, STATUS_RETRIES + 1):
+                try:
+                    self.iam.delete_policy(PolicyArn=self.boundary_arn())
+                    return
+                except ClientError as e:
+                    if _code(e) != "DeleteConflict" or attempt == STATUS_RETRIES:
+                        raise
+                time.sleep(STATUS_WAIT_S)
 
         self._delete(f"iam-policy:{self.boundary_name}", del_boundary, done)
         if done[-1]["result"] in ("error: AccessDenied", "error: AccessDeniedException"):
@@ -629,8 +649,13 @@ def parse_report(tail: str) -> dict:
 
 
 def all_gone(resources: dict) -> bool:
-    regional = [v for r in resources["regions"].values() for v in r.values()]
-    return resources["iam_role"].get("exists") is False and all(v.get("exists") is False for v in regional)
+    return not remaining(resources)
+
+
+def remaining(resources: dict) -> list[str]:
+    left = [] if resources["iam_role"].get("exists") is False else ["iam_role"]
+    return left + [f"{region}:{kind}" for region, res in resources["regions"].items()
+                   for kind, v in res.items() if v.get("exists") is not False]
 
 
 def _local_key() -> bytes:
@@ -693,15 +718,19 @@ def _load_or_empty(path) -> dict:
     return load_json(path) if path.exists() else {}
 
 
+def _package_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name.strip()).lower()
+
+
 def library_mismatches(model_meta: dict, requirements_text: str) -> list[str]:
     pins = {}
     for line in requirements_text.splitlines():
         name, sep, version = line.strip().partition("==")
         if sep:
-            pins[name.strip().lower()] = version.strip()
-    return [f"{lib} {ver}, requirements-lambda.txt {pins.get(lib.lower())}"
+            pins[_package_name(name)] = version.strip()
+    return [f"{lib} {ver}, requirements-lambda.txt {pins.get(_package_name(lib))}"
             for lib, ver in sorted((model_meta.get("library_versions") or {}).items())
-            if pins.get(lib.lower()) != ver]
+            if pins.get(_package_name(lib)) != ver]
 
 
 def preflight_problems(model_meta: dict, model_file_sha: str, evaluation: dict, service_check: dict,
@@ -791,6 +820,8 @@ def step_deploy(ctx) -> None:
     res = {"cloud": cloud.info()}
     ctx.cloud = cloud.info()
 
+    cloud.check_bucket()
+    cloud.check_role()
     res["permissions_boundary"] = cloud.ensure_boundary()
     res["role"] = cloud.ensure_role()
     ctx.state["role_created"] = res["role"] == "created"
@@ -1080,30 +1111,43 @@ def step_cleanup(ctx) -> None:
     deleted = [d for c in clouds for d in c.cleanup_regional()]
     own_unreachable = [u["region"] for u in unreachable if u["blocking"]]
     remove_role = all(d["result"] in ("deleted", "not_found") for d in deleted) and not own_unreachable and not broken
+    role_gone = False
     if remove_role:
-        deleted += clouds[0].cleanup_role()
+        role_actions = clouds[0].cleanup_role()
+        deleted += role_actions
+        role_gone = role_actions[0]["result"] in ("deleted", "not_found")
     else:
         deleted.append({"resource": f"iam:{clouds[0].role}",
                         "result": "kept: 지역 자원이 남았거나 다 확인하지 못해, 이 역할을 쓰는 함수가 있을 수 있음"})
     after = _status_all(clouds)
-    for _ in range(STATUS_RETRIES if remove_role else 0):
+    for _ in range(STATUS_RETRIES if role_gone else 0):
         if all_gone(after):
             break
         time.sleep(STATUS_WAIT_S)
         after = _status_all(clouds)
+    errors = [d for d in deleted if d["result"].startswith("error")]
     others = other_account_regions(clouds[0].account)
     report = {"cleaned_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
               "regions_unreachable": unreachable, "run_log_unreadable_lines": broken, "before": before,
-              "actions": deleted, "after": after,
+              "actions": deleted, "errors": errors, "after": after,
               "all_gone": all_gone(after) and not own_unreachable and not broken, "other_account_regions": others}
     write_json(ctx.out("results/cloud/cleanup.json"), report)
     ctx.cloud = {**clouds[0].info(), "regions_checked": report["regions_checked"]}
     ctx.summary = {"all_gone": report["all_gone"], "actions": {d["resource"]: d["result"] for d in deleted},
                    "other_account_regions": others}
+    problems = []
+    if own_unreachable:
+        problems.append(f"접속하지 못한 리전 {own_unreachable}")
     if broken:
-        raise RuntimeError("찾은 자원은 정리했고 IAM 역할은 남겼습니다. " + BROKEN_RUN_LOG.format(n=broken))
-    if not report["all_gone"]:
-        raise RuntimeError(f"남은 자원이 있거나 확인하지 못했습니다(접속하지 못한 리전 {own_unreachable}): {after}")
+        problems.append(BROKEN_RUN_LOG.format(n=broken))
+    left = remaining(after)
+    if left:
+        problems.append(f"남았거나 확인하지 못한 자원 {left}")
+    if errors:
+        problems.append("삭제 중 오류 " + ", ".join(f"{d['resource']} {d['result']}" for d in errors))
+    if problems:
+        raise RuntimeError("정리를 끝내지 못했습니다. " + " / ".join(problems)
+                           + ". 자세한 내용은 cleanup.json 의 actions, after 를 보세요")
     forget_account(clouds[0].account)
     if others:
         raise RuntimeError(f"이 계정의 자원은 모두 지웠지만, 다른 계정에서 배포한 기록이 남아 있습니다(리전 {others}). "

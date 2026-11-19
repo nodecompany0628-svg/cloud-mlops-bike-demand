@@ -188,11 +188,14 @@ def test_role_without_project_tags_is_left_alone(sandbox, monkeypatch):
         iam = boto3.client("iam", region_name="ap-northeast-2")
         iam.create_role(RoleName="bike-demand-predict-role", AssumeRolePolicyDocument=json.dumps(cloud.LAMBDA_TRUST))
         rc_deploy = run(["deploy"])
+        created = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
+        sleeps = []
+        monkeypatch.setattr(cloud.time, "sleep", sleeps.append)
         rc_clean = run(["cleanup"])
         roles = [r["RoleName"] for r in iam.list_roles()["Roles"]]
     recs = records(sandbox)
-    assert rc_deploy == 1 and "IAM 역할" in recs[0]["error"]
-    assert rc_clean == 1 and "bike-demand-predict-role" in roles
+    assert rc_deploy == 1 and "IAM 역할" in recs[0]["error"] and created == []
+    assert rc_clean == 1 and "bike-demand-predict-role" in roles and sleeps == []
 
 
 def test_override_deploy_is_recorded_separately(sandbox):
@@ -230,9 +233,10 @@ def test_cleanup_fails_when_bucket_state_is_unknown(sandbox, monkeypatch):
                 c.head_bucket = denied
             return c
         monkeypatch.setattr(boto3.Session, "client", client)
+        status_rc = run(["status"])
         rc = run(["cleanup"])
     recs = records(sandbox)
-    assert rc == 1 and recs[-1]["status"] == "failed"
+    assert status_rc == 1 and rc == 1 and recs[-1]["status"] == "failed"
     failed = sandbox / "failed" / f"{recs[-1]['run_id']}_cleanup" / "results" / "cloud" / "cleanup.json"
     report = json.loads(failed.read_text(encoding="utf-8"))
     assert report["all_gone"] is False and regional(report["after"])["s3_bucket"]["exists"] is None
@@ -342,6 +346,10 @@ def test_release_rejects_untested_region(sandbox):
 def test_empty_tags_are_refused(sandbox, monkeypatch):
     cfg = load_config()
     cfg["cloud"]["tags"] = {}
+
+    def no_session(*a, **kw):
+        raise AssertionError("AWS 세션을 만들면 안 됨")
+    monkeypatch.setattr(cloud, "make_session", no_session)
     with mock_aws():
         rc = runlog.run_steps(["status"], STEPS, cfg, make_args(steps=["status"]), DEFAULT_CONFIG)
     assert rc == 1 and "cloud.tags" in records(sandbox)[-1]["error"]
@@ -355,10 +363,12 @@ def test_two_buckets_block_deploy_but_cleanup_removes_both(sandbox):
             s3.put_bucket_tagging(Bucket=name, Tagging={"TagSet": [
                 {"Key": k, "Value": v} for k, v in load_config()["cloud"]["tags"].items()]})
         rc_deploy = run(["deploy"])
+        iam = boto3.client("iam", region_name="ap-northeast-2")
+        iam_after_refusal = iam.list_roles()["Roles"] + iam.list_policies(Scope="Local")["Policies"]
         rc_clean = run(["cleanup"])
         left = [b["Name"] for b in s3.list_buckets()["Buckets"]]
     recs = records(sandbox)
-    assert rc_deploy == 1 and "버킷이 여러 개" in recs[0]["error"]
+    assert rc_deploy == 1 and "버킷이 여러 개" in recs[0]["error"] and iam_after_refusal == []
     assert rc_clean == 0 and left == []
 
 
@@ -537,7 +547,9 @@ def test_existing_role_without_boundary_is_refused(sandbox):
         iam.create_role(RoleName="bike-demand-predict-role", AssumeRolePolicyDocument=json.dumps(cloud.LAMBDA_TRUST),
                         Tags=[{"Key": k, "Value": v} for k, v in load_config()["cloud"]["tags"].items()])
         rc = run(["deploy"])
-    assert rc == 1 and "권한 경계" in records(sandbox)[-1]["error"]
+        policies = iam.list_policies(Scope="Local")["Policies"]
+        buckets = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
+    assert rc == 1 and "권한 경계" in records(sandbox)[-1]["error"] and policies == [] and buckets == []
 
 
 def test_configured_bucket_left_untagged_is_adopted(sandbox):
@@ -682,3 +694,44 @@ def test_boundary_with_other_content_stops_deploy_before_creating_bucket(sandbox
         buckets = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
         roles = boto3.client("iam", region_name="ap-northeast-2").list_roles()["Roles"]
     assert rc == 1 and "내용이 지금 설정" in records(sandbox)[-1]["error"] and buckets == [] and roles == []
+
+
+def boundary_delete_failing(monkeypatch, codes):
+    real_client = boto3.Session.client
+    calls = []
+
+    def client(self, name, *a, **kw):
+        c = real_client(self, name, *a, **kw)
+        if name == "iam":
+            real_delete = c.delete_policy
+
+            def delete_policy(**kwargs):
+                calls.append(1)
+                if len(calls) <= len(codes):
+                    raise ClientError({"Error": {"Code": codes[len(calls) - 1], "Message": "x"}}, "DeletePolicy")
+                return real_delete(**kwargs)
+            c.delete_policy = delete_policy
+        return c
+    monkeypatch.setattr(boto3.Session, "client", client)
+    return calls
+
+
+def test_boundary_delete_conflict_is_retried(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        calls = boundary_delete_failing(monkeypatch, ["DeleteConflict"])
+        rc = run(["cleanup"])
+        policies = boto3.client("iam", region_name="ap-northeast-2").list_policies(Scope="Local")["Policies"]
+    assert rc == 0 and len(calls) == 2 and policies == []
+
+
+def test_cleanup_error_is_not_recorded_as_success(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        boundary_delete_failing(monkeypatch, ["ServiceFailure"])
+        rc = run(["cleanup"])
+    rec = records(sandbox)[-1]
+    clean = failed_result(sandbox, rec, "results/cloud/cleanup.json")
+    assert rc == 1 and "삭제 중 오류" in rec["error"] and clean["errors"][0]["result"] == "error: ServiceFailure"

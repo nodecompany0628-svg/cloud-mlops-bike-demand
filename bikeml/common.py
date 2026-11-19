@@ -39,7 +39,7 @@ def rel(path) -> str:
     try:
         return p.relative_to(ROOT).as_posix()
     except ValueError:
-        return p.as_posix()
+        return f"<EXTERNAL>/{p.name}"
 
 
 def model_dir(cfg: dict) -> Path:

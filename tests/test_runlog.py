@@ -198,3 +198,21 @@ def test_data_files_are_not_rewritten(isolated):
     assert run(["step"], {"step": step}) == 0
     assert (isolated / "data" / "raw" / "x.csv").read_text(encoding="utf-8") == text
     assert (isolated / "results" / "y.txt").read_text(encoding="utf-8").startswith("~")
+
+
+def test_odd_run_log_lines_count_as_unreadable(isolated):
+    runlog.RUN_LOG.parent.mkdir(parents=True)
+    good = json.dumps({"run_id": "a", "step": "deploy", "cloud": {"region": "ap-northeast-2", "bucket": "b"}})
+    lines = [good.encode(), b"", b"[]", b"\xff\xfe", json.dumps({"cloud": []}).encode(),
+             json.dumps({"cloud": {"region": 5}}).encode(), b'{"run_id": "cut"']
+    runlog.RUN_LOG.write_bytes(b"\n".join(lines) + b"\n")
+    records, broken = runlog.read_run_log()
+    assert [r["run_id"] for r in records] == ["a"] and broken == 5
+
+
+def test_config_path_outside_repo_is_not_recorded(isolated, tmp_path):
+    outside = tmp_path / "elsewhere" / "my_config.json"
+    args = argparse.Namespace(config=str(outside), lambda_config=str(outside), cmd="run", steps=["ok"])
+    assert runlog.run_steps(["ok"], {"ok": lambda ctx: None}, load_config(), args, DEFAULT_CONFIG) == 0
+    rec = recs(isolated)[0]
+    assert rec["args"]["config"] == "<EXTERNAL>/my_config.json" and "elsewhere" not in json.dumps(rec)

@@ -188,6 +188,14 @@ def append_record(record: dict) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _arg_value(key: str, value):
+    if key == "profile" and value:
+        return "<PROFILE>"
+    if key in ("config", "lambda_config") and value:
+        return rel(value)
+    return value
+
+
 def run_steps(step_names: list[str], registry: dict, cfg: dict, args, config_path: Path) -> int:
     run_id = new_run_id()
     git = git_info()
@@ -243,8 +251,7 @@ def run_steps(step_names: list[str], registry: dict, cfg: dict, args, config_pat
             "model": ctx.model,
             "inputs": ctx.inputs,
             "configs": ctx.configs,
-            "args": {k: ("<PROFILE>" if k == "profile" and v else v)
-                     for k, v in vars(args).items() if k not in ("func",)},
+            "args": {k: _arg_value(k, v) for k, v in vars(args).items() if k not in ("func",)},
             "cloud": ctx.cloud,
             "result_location": result_location,
             "summary": ctx.summary,
@@ -277,16 +284,30 @@ def _cleanup_staging(run_id: str) -> None:
         pass
 
 
+def _valid_record(rec) -> bool:
+    if not isinstance(rec, dict):
+        return False
+    cloud = rec.get("cloud")
+    if cloud is None:
+        return True
+    return isinstance(cloud, dict) and all(isinstance(cloud.get(k), (str, type(None))) for k in ("region", "bucket"))
+
+
 def read_run_log() -> tuple[list[dict], int]:
     if not RUN_LOG.exists():
         return [], 0
     records, broken = [], 0
-    for line in RUN_LOG.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
+    for raw in RUN_LOG.read_bytes().splitlines():
+        if not raw.strip():
             continue
         try:
-            records.append(json.loads(line))
-        except json.JSONDecodeError:
+            rec = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            broken += 1
+            continue
+        if _valid_record(rec):
+            records.append(rec)
+        else:
             broken += 1
     return records, broken
 

@@ -66,7 +66,7 @@ def test_changed_service_cases_block_deploy():
 def test_library_versions_must_match_lambda_pins():
     meta = GOOD["model_meta"]
     assert library_mismatches(meta, "numpy==2.5.5\nscikit-learn==1.9.1\nscipy==1.18.1\n") == []
-    found = library_mismatches(meta, "numpy==2.5.4\nScikit-Learn == 1.9.1\n")
+    found = library_mismatches(meta, "numpy==2.5.4\nScikit_Learn == 1.9.1\n")
     assert found == ["numpy 2.5.5, requirements-lambda.txt 2.5.4"]
     assert "라이브러리 버전" in problems(library_mismatch=found)[0]
     assert "라이브러리 버전이 없음" in problems(model_meta={"model_sha256": SHA})[0]
