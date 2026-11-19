@@ -8,6 +8,8 @@
   "runtime": "python3.12",
   "architecture": "x86_64",
   "precompiled_pyc": true,
+  "pyc_compiled": 1380,
+  "pyc_failed": [],
   "platforms": [
     "manylinux_2_28_x86_64",
     "manylinux_2_17_x86_64",

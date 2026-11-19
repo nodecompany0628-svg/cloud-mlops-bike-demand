@@ -58,7 +58,7 @@
 | deploy | 배포 전 확인(모델, 학습 자료, 분할 기간, 특성 코드, 평가, 검사, zip, 런타임과 아키텍처)을 한 뒤 S3, IAM 역할, 로그 그룹, Lambda 함수를 만들고 버전 게시 |
 | smoke | 같은 검사 사례 12개를 Lambda에 보냄 |
 | cloud-eval | 평가 자료 2,888건을 Lambda로 예측해 로컬 결과와 비교 |
-| release | smoke와 cloud-eval을 모두 통과한 버전에만 `live` 별칭을 붙임 |
+| release | smoke와 cloud-eval을 모두 통과한 버전에만 `live` 별칭을 붙임 (리전, 리비전, 코드, 모델 경로까지 같은지 확인) |
 
 | 폴더 | 내용 |
 |---|---|
@@ -81,7 +81,7 @@
 | 기준 방법 MAE | 시간대 평균 94.78, 전체 평균 170.51 대/시간. 시간대 평균보다 49.9% 낮아 합격 | 같은 파일 |
 | 서비스 검사 (로컬 핸들러) | 12/12 통과 | [results/service_check/local.json](results/service_check/local.json) |
 | 실패 처리 예시 | 합격 기준을 90%로 올린 설정에서 evaluate 실패, check-local 건너뜀, 정상 결과는 그대로 | [results/failed/](results/failed/), [runs/run_log.jsonl](runs/run_log.jsonl) |
-| 테스트 | 77개 통과 | `python -m pytest -q` |
+| 테스트 | 80개 통과 | `python -m pytest -q` |
 | Lambda 패키지 | zip 64.29MB, 압축 해제 198.94MB (한도 250MB) | [results/cloud/package.json](results/cloud/package.json) |
 | 실제 AWS 실행 | 실행 전 | [docs/cloud.md](docs/cloud.md) |
 
