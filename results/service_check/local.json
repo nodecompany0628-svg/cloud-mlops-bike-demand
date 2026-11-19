@@ -2,7 +2,7 @@
   "target": "local",
   "model": {
     "version": "hgb-v1",
-    "sha256": "9911f56a01c312600ac0ce5101e811299274debd19ad6d077f2e6b8e090d47dd",
+    "sha256": "f6186c0a881176ccb676683346571a8fa1c5fc52aa0a4cfd0c6768d241bfded0",
     "sklearn": "1.9.1"
   },
   "runtime": {
@@ -36,7 +36,7 @@
         }
       ],
       "meta": {
-        "client_ms": 57.3
+        "client_ms": 55.3
       }
     },
     {
@@ -69,7 +69,7 @@
         }
       ],
       "meta": {
-        "client_ms": 5.6
+        "client_ms": 5.9
       }
     },
     {
@@ -96,7 +96,7 @@
         }
       ],
       "meta": {
-        "client_ms": 7.0
+        "client_ms": 4.5
       }
     },
     {
@@ -122,7 +122,7 @@
         }
       ],
       "meta": {
-        "client_ms": 5.4
+        "client_ms": 4.4
       }
     },
     {

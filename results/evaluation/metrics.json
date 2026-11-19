@@ -2,7 +2,7 @@
   "model": {
     "name": "bike-hgb",
     "version": "hgb-v1",
-    "sha256": "9911f56a01c312600ac0ce5101e811299274debd19ad6d077f2e6b8e090d47dd"
+    "sha256": "f6186c0a881176ccb676683346571a8fa1c5fc52aa0a4cfd0c6768d241bfded0"
   },
   "model_source": "candidate",
   "eval_data": {

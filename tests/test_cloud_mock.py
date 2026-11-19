@@ -318,7 +318,7 @@ def test_release_rejects_recreated_function_with_same_version_number(sandbox):
         except lam.exceptions.ResourceNotFoundException:
             alias = None
     recs = records(sandbox)
-    assert rc == 1 and "통과한 기록이 없습니다" in recs[-1]["error"] and alias is None
+    assert rc == 1 and "마지막 실행이 통과가 아닙니다" in recs[-1]["error"] and alias is None
 
 
 def test_release_rejects_untested_region(sandbox):
