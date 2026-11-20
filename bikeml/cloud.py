@@ -422,6 +422,28 @@ class Cloud:
                 time.sleep(UPLOAD_WAIT_S)
         raise RuntimeError("버킷 버전 관리가 켜지지 않아 객체 버전을 받지 못했습니다")
 
+    def check_model_uri(self, uri: str, sha256: str) -> dict:
+        from botocore.exceptions import ClientError
+
+        if not uri.startswith("s3://"):
+            raise RuntimeError(f"MODEL_URI 가 S3 경로가 아닙니다: {uri}")
+        rest, _, version = uri[len("s3://"):].partition("?versionId=")
+        bucket, _, key = rest.partition("/")
+        if not bucket.startswith(f"{self.bucket_base}-") or not key.startswith("models/"):
+            raise RuntimeError(f"MODEL_URI {uri} 는 Lambda 역할이 읽을 수 있는 {self.bucket_base}-*/models/ 아래가 아닙니다")
+        kw = {"Bucket": bucket, "Key": key, **({"VersionId": version} if version else {})}
+        try:
+            head = self.s3.head_object(**kw)
+        except ClientError as e:
+            code = _code(e)
+            if code in NOT_FOUND or code == "NoSuchVersion":
+                raise RuntimeError(f"MODEL_URI 가 가리키는 객체가 없습니다: {uri}") from e
+            raise RuntimeError(f"MODEL_URI 가 가리키는 객체를 확인하지 못했습니다({code}): {uri}") from e
+        found = head.get("Metadata", {}).get("sha256")
+        if found != sha256:
+            raise RuntimeError(f"MODEL_URI 객체의 sha256 이 모델과 다릅니다(기대 {sha256[:12]}, 객체 {(found or '기록 없음')[:12]}): {uri}")
+        return {"uri": uri, "exists": True, "sha256_matches": True, "version_id": head.get("VersionId")}
+
     def function_exists(self) -> bool:
         try:
             self.lam.get_function(FunctionName=self.fn)
@@ -1031,6 +1053,7 @@ def step_deploy(ctx) -> None:
 
     override = getattr(ctx.args, "model_uri_override", None)
     model_uri = override or f"s3://{cloud.bucket}/{model_key}?versionId={res['model_upload']['version_id']}"
+    res["model_uri_check"] = cloud.check_model_uri(model_uri, meta["model_sha256"])
     env = {"MODEL_URI": model_uri, "MODEL_VERSION": meta["version"], "MODEL_SHA256": meta["model_sha256"],
            "JOBLIB_MULTIPROCESSING": "0"}
     git = git_info()
@@ -1103,9 +1126,11 @@ def step_smoke(ctx) -> None:
     write_json(ctx.out("results/service_check/cloud.json"), report)
     ctx.summary = {"passed": report["passed"], "total": report["total"], "function_version": version}
     if not report["all_passed"]:
-        bad = [f"{c['name']}: {c['problems'][:1]}" for c in report["cases"] if not c["passed"]]
-        bad += report.get("problems", [])
-        raise RuntimeError(f"클라우드 서비스 검사 실패 {len(bad)}건: {bad[:3]}")
+        failed = [c for c in report["cases"] if not c["passed"]]
+        others = report.get("problems", [])
+        bad = [f"{c['name']}: {c['problems'][:1]}" for c in failed] + others
+        raise RuntimeError(f"클라우드 서비스 검사 실패: 사례 {len(failed)}/{report['total']}건, "
+                           f"그 밖의 문제 {len(others)}건: {bad[:3]}")
 
 
 def step_cloud_eval(ctx) -> None:

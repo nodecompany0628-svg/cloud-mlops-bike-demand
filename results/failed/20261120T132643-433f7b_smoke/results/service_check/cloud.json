@@ -1,0 +1,414 @@
+{
+  "target": "lambda:bike-demand-predict:2",
+  "model": {
+    "version": "hgb-v1",
+    "sha256": "f6186c0a881176ccb676683346571a8fa1c5fc52aa0a4cfd0c6768d241bfded0",
+    "sklearn": "1.9.1",
+    "numpy": "2.5.5"
+  },
+  "runtime": null,
+  "passed": 0,
+  "total": 12,
+  "all_passed": false,
+  "cases": [
+    {
+      "name": "normal_one_hour",
+      "about": "정상 입력 1건 (2012-10-01 월요일 출근 시간)",
+      "expect": {
+        "status": 200,
+        "n": 1
+      },
+      "status": 500,
+      "passed": false,
+      "problems": [
+        "상태 코드 500 (기대 200): {\"ok\": false, \"error\": {\"code\": \"MODEL_LOAD_FAILED\", \"message\": \"모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden\"}}"
+      ],
+      "error": {
+        "code": "MODEL_LOAD_FAILED",
+        "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "f62fa65f-fbd6-44b3-b440-ae7470b04ca8",
+        "function_version": "2",
+        "function_error": null,
+        "client_ms": 1568.5,
+        "report": {
+          "duration_ms": 658.35,
+          "billed_ms": 985.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 110.0,
+          "init_ms": 326.05
+        }
+      }
+    },
+    {
+      "name": "normal_day_24h",
+      "about": "정상 입력 24건 (평가 기간 하루 전체), 두 번 보내 결과가 같은지 확인",
+      "expect": {
+        "status": 200,
+        "n": 24
+      },
+      "status": 500,
+      "passed": false,
+      "problems": [
+        "상태 코드 500 (기대 200): {\"ok\": false, \"error\": {\"code\": \"MODEL_LOAD_FAILED\", \"message\": \"모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden\"}}"
+      ],
+      "error": {
+        "code": "MODEL_LOAD_FAILED",
+        "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "d0dc3c03-b84a-433b-a6db-e802c5b197d6",
+        "function_version": "2",
+        "function_error": null,
+        "client_ms": 94.9,
+        "report": {
+          "duration_ms": 66.66,
+          "billed_ms": 67.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 110.0
+        }
+      }
+    },
+    {
+      "name": "target_field_ignored",
+      "about": "정답(cnt)을 입력에 넣어도 예측에 쓰이지 않음",
+      "expect": {
+        "status": 200,
+        "n": 1,
+        "same_prediction_as": "normal_one_hour",
+        "warning_contains": "알 수 없는 필드"
+      },
+      "status": 500,
+      "passed": false,
+      "problems": [
+        "상태 코드 500 (기대 200): {\"ok\": false, \"error\": {\"code\": \"MODEL_LOAD_FAILED\", \"message\": \"모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden\"}}"
+      ],
+      "error": {
+        "code": "MODEL_LOAD_FAILED",
+        "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "973335d0-979a-4f91-bfe5-db76ac9a48f2",
+        "function_version": "2",
+        "function_error": null,
+        "client_ms": 78.7,
+        "report": {
+          "duration_ms": 55.84,
+          "billed_ms": 56.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 111.0
+        }
+      }
+    },
+    {
+      "name": "year_outside_training",
+      "about": "학습 기간 밖 연도는 경고와 함께 2012년 수준으로 계산",
+      "expect": {
+        "status": 200,
+        "n": 1,
+        "warning_contains": "학습 기간"
+      },
+      "status": 500,
+      "passed": false,
+      "problems": [
+        "상태 코드 500 (기대 200): {\"ok\": false, \"error\": {\"code\": \"MODEL_LOAD_FAILED\", \"message\": \"모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden\"}}"
+      ],
+      "error": {
+        "code": "MODEL_LOAD_FAILED",
+        "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "de3fd516-3954-43e0-b7e7-8db4e8b9e4c7",
+        "function_version": "2",
+        "function_error": null,
+        "client_ms": 78.9,
+        "report": {
+          "duration_ms": 56.34,
+          "billed_ms": 57.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 111.0
+        }
+      }
+    },
+    {
+      "name": "missing_humidity",
+      "about": "필수 입력 누락",
+      "expect": {
+        "status": 400,
+        "error_code": "INVALID_INPUT",
+        "error_field": "humidity"
+      },
+      "status": 500,
+      "passed": false,
+      "problems": [
+        "상태 코드 500 (기대 400): {\"ok\": false, \"error\": {\"code\": \"MODEL_LOAD_FAILED\", \"message\": \"모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden\"}}"
+      ],
+      "error": {
+        "code": "MODEL_LOAD_FAILED",
+        "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "02203544-3286-43ca-a529-608bac9e123f",
+        "function_version": "2",
+        "function_error": null,
+        "client_ms": 84.8,
+        "report": {
+          "duration_ms": 63.87,
+          "billed_ms": 64.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 112.0
+        }
+      }
+    },
+    {
+      "name": "hour_out_of_range",
+      "about": "없는 시각(25시)",
+      "expect": {
+        "status": 400,
+        "error_code": "INVALID_INPUT",
+        "error_field": "datetime"
+      },
+      "status": 500,
+      "passed": false,
+      "problems": [
+        "상태 코드 500 (기대 400): {\"ok\": false, \"error\": {\"code\": \"MODEL_LOAD_FAILED\", \"message\": \"모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden\"}}"
+      ],
+      "error": {
+        "code": "MODEL_LOAD_FAILED",
+        "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "6b043fd3-a96c-429f-bbfc-fd614aff9cc5",
+        "function_version": "2",
+        "function_error": null,
+        "client_ms": 137.2,
+        "report": {
+          "duration_ms": 114.75,
+          "billed_ms": 115.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 112.0
+        }
+      }
+    },
+    {
+      "name": "weather_out_of_range",
+      "about": "날씨 코드 5 (허용 1~4)",
+      "expect": {
+        "status": 400,
+        "error_code": "INVALID_INPUT",
+        "error_field": "weather"
+      },
+      "status": 500,
+      "passed": false,
+      "problems": [
+        "상태 코드 500 (기대 400): {\"ok\": false, \"error\": {\"code\": \"MODEL_LOAD_FAILED\", \"message\": \"모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden\"}}"
+      ],
+      "error": {
+        "code": "MODEL_LOAD_FAILED",
+        "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "12b77b32-2e06-4bb4-a1a1-ce06916a3aa5",
+        "function_version": "2",
+        "function_error": null,
+        "client_ms": 75.4,
+        "report": {
+          "duration_ms": 53.85,
+          "billed_ms": 54.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 112.0
+        }
+      }
+    },
+    {
+      "name": "temp_as_string",
+      "about": "숫자 자리에 문자열",
+      "expect": {
+        "status": 400,
+        "error_code": "INVALID_INPUT",
+        "error_field": "temp_c"
+      },
+      "status": 500,
+      "passed": false,
+      "problems": [
+        "상태 코드 500 (기대 400): {\"ok\": false, \"error\": {\"code\": \"MODEL_LOAD_FAILED\", \"message\": \"모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden\"}}"
+      ],
+      "error": {
+        "code": "MODEL_LOAD_FAILED",
+        "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "1d7f8cf5-98e7-42fc-a1d0-6537fbe540af",
+        "function_version": "2",
+        "function_error": null,
+        "client_ms": 89.7,
+        "report": {
+          "duration_ms": 69.94,
+          "billed_ms": 70.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 112.0
+        }
+      }
+    },
+    {
+      "name": "humidity_out_of_range",
+      "about": "습도 130%",
+      "expect": {
+        "status": 400,
+        "error_code": "INVALID_INPUT",
+        "error_field": "humidity"
+      },
+      "status": 500,
+      "passed": false,
+      "problems": [
+        "상태 코드 500 (기대 400): {\"ok\": false, \"error\": {\"code\": \"MODEL_LOAD_FAILED\", \"message\": \"모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden\"}}"
+      ],
+      "error": {
+        "code": "MODEL_LOAD_FAILED",
+        "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "d170c43b-5e51-4f3d-8682-70bc4d68c4df",
+        "function_version": "2",
+        "function_error": null,
+        "client_ms": 71.7,
+        "report": {
+          "duration_ms": 51.96,
+          "billed_ms": 52.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 112.0
+        }
+      }
+    },
+    {
+      "name": "empty_instances",
+      "about": "빈 목록",
+      "expect": {
+        "status": 400,
+        "error_code": "INVALID_INPUT"
+      },
+      "status": 500,
+      "passed": false,
+      "problems": [
+        "상태 코드 500 (기대 400): {\"ok\": false, \"error\": {\"code\": \"MODEL_LOAD_FAILED\", \"message\": \"모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden\"}}"
+      ],
+      "error": {
+        "code": "MODEL_LOAD_FAILED",
+        "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "cb37dced-79b1-4493-b13b-630d40627b0e",
+        "function_version": "2",
+        "function_error": null,
+        "client_ms": 78.3,
+        "report": {
+          "duration_ms": 56.36,
+          "billed_ms": 57.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 112.0
+        }
+      }
+    },
+    {
+      "name": "no_instances_key",
+      "about": "instances 키 없음",
+      "expect": {
+        "status": 400,
+        "error_code": "INVALID_INPUT"
+      },
+      "status": 500,
+      "passed": false,
+      "problems": [
+        "상태 코드 500 (기대 400): {\"ok\": false, \"error\": {\"code\": \"MODEL_LOAD_FAILED\", \"message\": \"모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden\"}}"
+      ],
+      "error": {
+        "code": "MODEL_LOAD_FAILED",
+        "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "95c95870-bb4b-470d-8e48-9d8d375a05b8",
+        "function_version": "2",
+        "function_error": null,
+        "client_ms": 93.4,
+        "report": {
+          "duration_ms": 63.74,
+          "billed_ms": 64.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 112.0
+        }
+      }
+    },
+    {
+      "name": "too_many_instances",
+      "about": "한도(1000건) 초과",
+      "expect": {
+        "status": 400,
+        "error_code": "TOO_MANY_INSTANCES"
+      },
+      "status": 500,
+      "passed": false,
+      "problems": [
+        "상태 코드 500 (기대 400): {\"ok\": false, \"error\": {\"code\": \"MODEL_LOAD_FAILED\", \"message\": \"모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden\"}}"
+      ],
+      "error": {
+        "code": "MODEL_LOAD_FAILED",
+        "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "c7f400fb-b1c1-4703-95dc-af7e8fc17c82",
+        "function_version": "2",
+        "function_error": null,
+        "client_ms": 108.0,
+        "report": {
+          "duration_ms": 75.0,
+          "billed_ms": 76.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 113.0
+        }
+      }
+    }
+  ],
+  "readiness": {
+    "skipped": true
+  },
+  "sample_day": null,
+  "function_version": "2",
+  "identity": {
+    "region": "ap-northeast-2",
+    "function": "bike-demand-predict",
+    "function_version": "2",
+    "revision_id": "fcfb55f4-a1dd-408d-a411-c33a2d7f84b1",
+    "code_sha256": "C+vlweAa5sGSuH1YsXXAFVMSSOvg/FTM1Wb1kaC8gGY=",
+    "model_uri": "s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl",
+    "model_version": "hgb-v1",
+    "model_sha256": "f6186c0a881176ccb676683346571a8fa1c5fc52aa0a4cfd0c6768d241bfded0"
+  },
+  "problems": [
+    "예시 날짜 비교를 만들지 못함 (prepare 결과 확인)"
+  ]
+}

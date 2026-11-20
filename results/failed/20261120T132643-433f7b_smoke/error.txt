@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "<REPO>\bikeml\runlog.py", line 240, in run_steps
+    registry[name](ctx)
+  File "<REPO>\bikeml\cloud.py", line 1108, in step_smoke
+    raise RuntimeError(f"클라우드 서비스 검사 실패 {len(bad)}건: {bad[:3]}")
+RuntimeError: 클라우드 서비스 검사 실패 13건: ['normal_one_hour: [\'상태 코드 500 (기대 200): {"ok": false, "error": {"code": "MODEL_LOAD_FAILED", "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"}}\']', 'normal_day_24h: [\'상태 코드 500 (기대 200): {"ok": false, "error": {"code": "MODEL_LOAD_FAILED", "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"}}\']', 'target_field_ignored: [\'상태 코드 500 (기대 200): {"ok": false, "error": {"code": "MODEL_LOAD_FAILED", "message": "모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden"}}\']']

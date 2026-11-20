@@ -200,17 +200,49 @@ def test_role_without_project_tags_is_left_alone(sandbox, monkeypatch):
     assert read(sandbox, "results/cloud/cleanup.json")["not_ours"] == ["iam_role"]
 
 
+def deploy_with_override(uri):
+    args = make_args(steps=["deploy"], model_uri_override=uri)
+    return runlog.run_steps(["deploy"], STEPS, load_config(), args, DEFAULT_CONFIG)
+
+
 def test_override_deploy_is_recorded_separately(sandbox):
     with mock_aws():
         assert run(["deploy"]) == 0
-        args = make_args(steps=["deploy"], model_uri_override="s3://bucket/models/hgb-v1/model.pkl")
-        rc = runlog.run_steps(["deploy"], STEPS, load_config(), args, DEFAULT_CONFIG)
+        normal = read(sandbox, "results/cloud/deploy.json")
+        same_object = normal["env"]["MODEL_URI"].split("?versionId=")[0]
+        rc = deploy_with_override(same_object)
     assert rc == 0
-    normal = read(sandbox, "results/cloud/deploy.json")
-    broken = read(sandbox, "results/cloud/deploy_override.json")
+    override = read(sandbox, "results/cloud/deploy_override.json")
     assert normal["model_uri_override"] is False and "?versionId=" in normal["env"]["MODEL_URI"]
-    assert broken["model_uri_override"] is True and broken["env"]["MODEL_URI"].endswith("model.pkl")
+    assert normal["model_uri_check"]["sha256_matches"] is True
+    assert override["model_uri_override"] is True and override["env"]["MODEL_URI"] == same_object
+    assert read(sandbox, "results/cloud/deploy.json") == normal
     assert records(sandbox)[-1]["summary"]["model_uri_override"] is True
+
+
+def published_versions():
+    lam = boto3.client("lambda", region_name="ap-northeast-2")
+    return [v["Version"] for v in lam.list_versions_by_function(FunctionName="bike-demand-predict")["Versions"]]
+
+
+@pytest.mark.parametrize("key, message", [
+    ("models/hgb-v1/model.pkl", "객체가 없습니다"),
+    ("models/hgb-v1/{sha12}/metadata.json", "sha256 이 모델과 다릅니다"),
+    ("packages/x.zip", "읽을 수 있는"),
+])
+def test_deploy_refuses_a_model_uri_that_lambda_cannot_use(sandbox, key, message):
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        normal = read(sandbox, "results/cloud/deploy.json")
+        before = published_versions()
+        bucket = normal["cloud"]["bucket"]
+        rc = deploy_with_override(f"s3://{bucket}/" + key.format(sha12=normal["env"]["MODEL_SHA256"][:12]))
+        after = published_versions()
+        env = boto3.client("lambda", region_name="ap-northeast-2").get_function_configuration(
+            FunctionName="bike-demand-predict")["Environment"]["Variables"]
+    assert rc == 1 and message in records(sandbox)[-1]["error"]
+    assert after == before and env["MODEL_URI"] == normal["env"]["MODEL_URI"]
+    assert not (sandbox / "promoted" / "results" / "cloud" / "deploy_override.json").exists()
 
 
 def test_cleanup_when_nothing_exists(sandbox):
@@ -325,8 +357,7 @@ def test_status_name_is_validated_before_aws(sandbox):
 def test_release_rejects_recreated_function_with_same_version_number(sandbox):
     with mock_aws():
         assert run(["deploy", "smoke", "cloud-eval", "release", "cleanup"]) == 0
-        args = make_args(steps=["deploy"], model_uri_override="s3://x/models/hgb-v1/model.pkl")
-        assert runlog.run_steps(["deploy"], STEPS, load_config(), args, DEFAULT_CONFIG) == 0
+        assert run(["deploy"]) == 0
         rc = run(["release"])
         lam = boto3.client("lambda", region_name="ap-northeast-2")
         try:
