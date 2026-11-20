@@ -209,4 +209,3 @@ aws lambda invoke --function-name bike-demand-predict --qualifier live --region 
 - `bikeml/`, `lambda_src/`, `tests/`의 전체 코드: 입력 검사와 특성 변환, 데이터 점검과 분할, 학습, 기준 방법 비교 평가, 서비스 검사, Lambda 핸들러, 배포 패키지 빌드, AWS 자원 준비·배포·호출·조회·정리, 실행 기록과 실패 처리
 - 설정(`config/`), 서비스 검사 사례(`samples/service_cases.json`), 문서(`docs/`)
 - 외부 코드를 복사해 쓰지 않았고, 라이브러리는 버전 파일에 적은 공개 패키지만 쓴다.
-- 코드와 문서 작성에 AI 코딩 도구(Claude Code)를 함께 사용했다.

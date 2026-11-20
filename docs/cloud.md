@@ -113,7 +113,7 @@ IAM 역할은 리전과 상관없는 자원이라, 모든 리전에서 이 과�
 
 ## 3. 실제 입력에서 결과까지 (실행 결과)
 
-2026-11-20에 과제용으로 새로 만든 AWS 계정(서울 리전)에서 실행했다. 처음 실행은 `python -m bikeml --profile <프로필> run cloud`(run_id `20261120T132357-9dc6e6`, 커밋 8b1d79c)이고, 다섯 단계가 모두 한 번에 성공했다.
+2026-11-20에 과제용으로 새로 만든 AWS 계정(서울 리전)에서 실행했다. 처음 실행은 `python -m bikeml --profile <프로필> run cloud`(run_id `20261120T132357-9dc6e6`, 커밋 862252c)이고, 다섯 단계가 모두 한 번에 성공했다.
 
 | 단계 | 걸린 시간 | 결과 |
 |---|---|---|
@@ -187,10 +187,10 @@ python -m bikeml --config config/demo_strict_criteria.json run evaluate check-lo
 
 | 순서 | run_id | 커밋 | 결과 |
 |---|---|---|---|
-| 정상 배포 | `20261120T132357-9dc6e6` | 8b1d79c | 버전 1. smoke 12/12, cloud-eval 통과, `live`를 1에 만듦 |
-| 재현 | `20261120T132643-433f7b` | f67fa40 | deploy 성공(버전 2). smoke 0/12, cloud-eval과 release 건너뜀 |
-| 고친 뒤 같은 명령 | `20261120T133547-3cdc6a` | fa9c5d4 | deploy가 함수를 바꾸기 전에 멈춤. 새 버전 없음 |
-| 고친 뒤 정상 명령 | `20261120T133555-5dacd4` | fa9c5d4 | 버전 3. smoke 12/12, cloud-eval 통과, `live`를 1에서 3으로 옮김 |
+| 정상 배포 | `20261120T132357-9dc6e6` | 862252c | 버전 1. smoke 12/12, cloud-eval 통과, `live`를 1에 만듦 |
+| 재현 | `20261120T132643-433f7b` | 96dfd54 | deploy 성공(버전 2). smoke 0/12, cloud-eval과 release 건너뜀 |
+| 고친 뒤 같은 명령 | `20261120T133547-3cdc6a` | c6cd886 | deploy가 함수를 바꾸기 전에 멈춤. 새 버전 없음 |
+| 고친 뒤 정상 명령 | `20261120T133555-5dacd4` | c6cd886 | 버전 3. smoke 12/12, cloud-eval 통과, `live`를 1에서 3으로 옮김 |
 
 1. 재현 명령
 
@@ -213,7 +213,7 @@ python -m bikeml --profile <프로필> run deploy smoke cloud-eval release --mod
 - Lambda 실행 역할의 권한은 `logs:CreateLogStream`, `logs:PutLogEvents`, `s3:GetObject`, `s3:GetObjectVersion`뿐이고 `s3:ListBucket`이 없다. S3는 `s3:ListBucket` 권한이 없는 요청자에게는 없는 객체를 404가 아니라 403으로 알린다. 그래서 같은 "없는 객체"가 Lambda에서는 403, 운영자에게는 404로 보였다. 403만 보고 권한 문제로 판단해 역할 권한을 넓히면 원인은 그대로 둔 채 권한만 커진다.
 - 원인: `deploy`가 `MODEL_URI`가 가리키는 객체가 실제로 있는지 확인하지 않고 Lambda에 넘겼다.
 
-4. 수정 (커밋 fa9c5d4)
+4. 수정 (커밋 c6cd886)
 
 `deploy`가 함수를 만들거나 바꾸기 전에 `MODEL_URI`를 확인한다([bikeml/cloud.py](../bikeml/cloud.py)의 `check_model_uri`).
 
@@ -225,6 +225,6 @@ python -m bikeml --profile <프로필> run deploy smoke cloud-eval release --mod
 
 5. 재검사
 
-- 같은 명령: `deploy`가 4.1초 만에 `MODEL_URI 가 가리키는 객체가 없습니다`로 멈췄고 smoke, cloud-eval, release는 건너뛰었다. 함수 버전은 늘지 않았다. 지금 코드로는 재현 명령이 이렇게 deploy에서 멈추므로, 2절의 재현은 커밋 f67fa40으로 실행한 기록이다.
+- 같은 명령: `deploy`가 4.1초 만에 `MODEL_URI 가 가리키는 객체가 없습니다`로 멈췄고 smoke, cloud-eval, release는 건너뛰었다. 함수 버전은 늘지 않았다. 지금 코드로는 재현 명령이 이렇게 deploy에서 멈추므로, 2절의 재현은 커밋 96dfd54으로 실행한 기록이다.
 - 정상 명령: 모델, metadata, zip은 이미 같은 sha256의 객체가 있어 다시 올리지 않았다. 재현 때 바뀐 `$LATEST`의 `MODEL_URI`를 되돌리면서 버전 3이 게시됐고, smoke 12/12, cloud-eval 2,888건(MAE 47.53, 로컬 예측과 최대 차이 0.0)을 통과했다. release가 `live`를 1에서 3으로 옮겼고 `release.json`에 `previous_live: "1"`이 남았다.
 - 함수에 남은 버전: 1(정상), 2(재현, `model.pkl`), 3(고친 뒤 정상). 버전 2는 검사를 통과하지 못해 `live`가 가리킨 적이 없다.
