@@ -4,9 +4,10 @@
 
 진행 상태 (2026-11-20)
 
-- 실행함: 데이터 받기와 점검, 분할, 학습, 평가, 로컬 서비스 검사, 테스트, Lambda 배포 패키지 빌드, 실패 처리 예시(엄격한 합격 기준으로 평가 실패)
-- 모의 AWS(moto)로만 확인함: 자원 생성과 배포, 버전 게시, `live` 별칭(release), 상태 조회, 정리 흐름. 이 테스트에서는 배포 전 확인을 대체하고, 작은 가짜 zip을 올리고, Lambda 호출을 로컬 핸들러로 대신한다.
-- 실행 전: 실제 AWS 배포와 클라우드 검사·평가, 클라우드 오류 재현과 복구, 새 폴더 재실행(클라우드 포함), 자원 정리. AWS 계정이 준비되면 실행하고 이 문서와 [docs/cloud.md](docs/cloud.md), [docs/operations.md](docs/operations.md)를 채운다.
+- 로컬: 데이터 받기와 점검, 분할, 학습, 평가, 로컬 서비스 검사, 테스트, Lambda 배포 패키지 빌드, 실패 처리 예시(엄격한 합격 기준으로 평가 실패)
+- 실제 AWS(서울 리전): 배포, 클라우드 검사와 평가, `live` 별칭, 잘못된 모델 경로 오류의 재현과 수정, 새 폴더 재실행(클라우드 포함), 자원 정리와 정리 후 상태 조회
+- 모의 AWS(moto) 테스트로 추가 확인: 남의 자원 보호, 이름 변경, 여러 리전, 중간 실패 같은 실제로 일부러 만들기 어려운 정리 경우
+- 클라우드 자원은 실행을 마치고 모두 지웠다. 실제 청구액은 하루쯤 늦게 반영되어 실행 당일에는 사용량으로 계산한 값(0.001달러 미만)만 적었다([docs/operations.md](docs/operations.md) 3절).
 
 ## 1. 서비스
 
@@ -81,9 +82,13 @@
 | 기준 방법 MAE | 시간대 평균 94.78, 전체 평균 170.51 대/시간. 시간대 평균보다 49.9% 낮아 합격 | 같은 파일 |
 | 서비스 검사 (로컬 핸들러) | 12/12 통과 | [results/service_check/local.json](results/service_check/local.json) |
 | 실패 처리 예시 | 합격 기준을 90%로 올린 설정에서 evaluate 실패, check-local 건너뜀, 정상 결과는 그대로 | [results/failed/](results/failed/), [runs/run_log.jsonl](runs/run_log.jsonl) |
-| 테스트 | 170개 통과 (새로 받은 폴더에서 `run package` 전에는 zip이 필요한 1개를 건너뛴다) | `python -m pytest -q` |
+| 테스트 | 173개 통과 (새로 받은 폴더에서 `run package` 전에는 zip이 필요한 1개를 건너뛴다) | `python -m pytest -q` |
 | Lambda 패키지 | zip 64.29MB, 압축 해제 198.94MB (한도 250MB) | [results/cloud/package.json](results/cloud/package.json) |
-| 실제 AWS 실행 | 실행 전 | [docs/cloud.md](docs/cloud.md) |
+| 클라우드 검사 (실제 Lambda) | 12/12 통과. 콜드 스타트 첫 요청 4.3~4.5초, 이후 1건 10ms 이내, 최대 메모리 244MB | [results/service_check/cloud.json](results/service_check/cloud.json), [docs/cloud.md](docs/cloud.md) 3절 |
+| 클라우드 평가 | 2,888건 MAE 47.53, 로컬 예측과 최대 차이 0.0 | [results/cloud/cloud_eval.json](results/cloud/cloud_eval.json) |
+| 오류 재현과 복구 | 잘못된 모델 경로로 배포하면 모든 요청이 `MODEL_LOAD_FAILED`(S3 403), `live`는 이전 버전 유지. 배포 전에 모델 객체와 sha256을 확인하게 고친 뒤 같은 명령은 배포 단계에서 멈춤 | [docs/cloud.md](docs/cloud.md) 5절 |
+| 새 폴더 재실행 | clone부터 `run all`까지 성공. 모델, 예측, zip이 원래와 같다 | [docs/operations.md](docs/operations.md) 1절 |
+| 자원 정리 | 함수, 로그 그룹, 버킷, 역할, 권한 경계 정책을 모두 지우고 정리 후 상태 조회로 확인 | [results/cloud/cleanup.json](results/cloud/cleanup.json), [results/cloud/status.json](results/cloud/status.json) |
 
 ## 4. 필요한 환경과 권한
 
@@ -150,7 +155,7 @@ python -m bikeml runs
 - `deploy`는 정리한 자료가 설정의 분할 기간과 맞고, 모델이 지금 학습 자료, 설정, 특성 코드로 학습됐고, 지금 합격 기준과 평가 자료로 `evaluate`를 통과했고, 지금 Lambda 코드로 `check-local`을 통과했으며, zip이 지금 코드와 런타임, 아키텍처로 만든 것일 때만 진행한다.
 - 사용자는 `live` 별칭으로 호출한다. `live`는 `release` 단계가 smoke와 cloud-eval을 모두 통과한 버전에만 옮긴다.
 
-AWS CLI로 직접 호출하는 방법. 검사를 통과한 버전을 가리키는 `live` 별칭으로 부른다.
+AWS CLI로 직접 호출하는 방법. 검사를 통과한 버전을 가리키는 `live` 별칭으로 부른다. 과제 실행 뒤 자원을 지웠으므로, 다시 `run cloud`로 배포한 뒤에 쓸 수 있다.
 
 ```
 aws lambda invoke --function-name bike-demand-predict --qualifier live --region ap-northeast-2 --profile mlops --cli-binary-format raw-in-base64-out --payload file://samples/generated/request_2012-12-03.json out.json

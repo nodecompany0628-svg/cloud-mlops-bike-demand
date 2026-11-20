@@ -64,11 +64,11 @@
 | missing_humidity, hour_out_of_range, weather_out_of_range, temp_as_string, humidity_out_of_range | 400과 틀린 필드 이름 | 통과 |
 | empty_instances, no_instances_key, too_many_instances (1,001건) | 400과 오류 코드 | 통과 |
 
-결과는 [results/service_check/local.json](../results/service_check/local.json)이고, 12개 모두 통과했다.
+결과는 [results/service_check/local.json](../results/service_check/local.json)이고, 12개 모두 통과했다. 실제 Lambda에서도 12개 모두 통과했다([results/service_check/cloud.json](../results/service_check/cloud.json)).
 
 예시로 2012-12-03(월) 하루 24시간을 넣었다(관측 날씨를 예보 대신 사용). 시간당 MAE는 34.75대이고, 하루 합계는 실제 6,234대, 예측 5,626대다.
 
-테스트(`python -m pytest -q`) 170개가 모두 통과한다. 새로 받은 폴더에서 `run package`로 zip을 만들기 전에는 zip이 필요한 1개를 건너뛴다. 파일별 범위는 다음과 같다.
+테스트(`python -m pytest -q`) 173개가 모두 통과한다. 새로 받은 폴더에서 `run package`로 zip을 만들기 전에는 zip이 필요한 1개를 건너뛴다. 파일별 범위는 다음과 같다.
 
 | 파일 | 확인하는 것 |
 |---|---|
@@ -84,7 +84,7 @@
 | `test_cloud_mock.py` | 모의 AWS(moto). 아래 목록 |
 
 모의 AWS 테스트가 확인하는 것
-- 흐름: 배포 2회(두 번째는 같은 모델과 패키지를 다시 올리지 않음), smoke, cloud-eval, release, status, cleanup이 차례로 성공. 아무것도 없을 때의 정리. 오류 재현용 배포가 정상 배포 기록을 덮지 않음
+- 흐름: 배포 2회(두 번째는 같은 모델과 패키지를 다시 올리지 않음), smoke, cloud-eval, release, status, cleanup이 차례로 성공. 아무것도 없을 때의 정리. 오류 재현용 배포가 정상 배포 기록을 덮지 않음. 배포할 `MODEL_URI`가 없는 객체이거나, 객체의 sha256이 모델과 다르거나, Lambda 역할이 읽을 수 없는 경로면 함수 설정을 바꾸지 않고 새 버전도 만들지 않은 채 멈춤
 - release 거부: cloud-eval을 건너뜀, 같은 버전을 다시 검사해 실패, 함수를 다시 만들어 번호만 같은 버전(모델 경로가 다른 경우와 리비전 ID만 다른 경우), 검사하지 않은 리전, 실행 기록에 읽을 수 없는 줄
 - 남의 자원 보호: 과제 태그가 없는 버킷, 역할, 로그 그룹은 건드리지 않고, 정리는 남의 자원만 남으면 성공으로 기록하며 `not_ours`에 적음. 태그 없는 같은 이름의 함수가 실행 역할을 쓰면 정리는 역할을 남기고 실패. 접두어로 시작하기만 하는 버킷은 이 과제의 버킷으로 보지 않음. 태그 없는 빈 버킷은 이름 형식이 맞거나 도구가 만들려고 한 기록이 있는 버킷일 때만 이어받음(status 기록이나 멈춘 deploy 기록만 있으면 이어받지도 지우지도 않음). 태그 없는 같은 이름의 함수는 smoke와 cloud-eval도 호출하지 않음. 이름이 맞는 버킷이 둘이거나, 태그 없는 기존 역할이나 로그 그룹이 있으면 배포는 아무 자원도 만들지 않고(상태 파일에도 적지 않고) 멈추고, 정리는 버킷을 둘 다 지움. 다른 리전에 있는 설정 버킷은 거부. 기록에 남은 다른 계정의 버킷은 건너뜀. 리전처럼 보이는 버킷 이름을 리전으로 오인하지 않음
 - 권한: 실행 역할에 권한 경계가 붙음. 경계 없는 기존 역할은 거부하고 경계 정책이나 버킷을 만들지 않음. 경계 정책의 내용이 설정과 다르면 역할과 버킷을 만들기 전에 멈춤. 경계 정책 문서가 docs와 같음. 모델 읽기 권한이 이 과제의 모든 버킷을 대상으로 함. 역할을 새로 만든 실행에서만 smoke가 권한 반영을 기다림. 운영자 키로 경계 정책을 지우지 못하면 `kept`로 남김. 경계 정책 삭제가 `DeleteConflict`로 실패하면 다시 시도하고, 이전 버전이 있는 경계 정책도 지움

@@ -1,0 +1,46 @@
+{
+  "checked_at": "2026-11-20T13:46:34+09:00",
+  "regions_checked": [
+    "ap-northeast-2"
+  ],
+  "region": "ap-northeast-2",
+  "credentials": "profile",
+  "caller_type": "root",
+  "function": "bike-demand-predict",
+  "role": "bike-demand-predict-role",
+  "permissions_boundary": {
+    "exists": false
+  },
+  "bucket_prefix": "bike-demand-mlops",
+  "tags": {
+    "project": "cloud-mlops-assignment",
+    "owner": "student"
+  },
+  "tags_sha256": "3d2414b38f31e600fe5e4ac2587e3f1664bfee741f167ad68ad64f9936144328",
+  "bucket": null,
+  "log_group": "/aws/lambda/bike-demand-predict",
+  "regions_unreachable": [],
+  "regions_ignored": [],
+  "run_log_unreadable_lines": 0,
+  "renamed_leftovers": [],
+  "other_account_regions": [],
+  "resources": {
+    "iam_role": {
+      "exists": false
+    },
+    "regions": {
+      "ap-northeast-2": {
+        "lambda_function": {
+          "exists": false
+        },
+        "s3_bucket": {
+          "exists": false
+        },
+        "log_group": {
+          "exists": false
+        }
+      }
+    }
+  },
+  "not_ours": []
+}

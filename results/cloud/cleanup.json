@@ -1,0 +1,119 @@
+{
+  "cleaned_at": "2026-11-20T13:46:29+09:00",
+  "regions_checked": [
+    "ap-northeast-2"
+  ],
+  "region": "ap-northeast-2",
+  "credentials": "profile",
+  "caller_type": "root",
+  "function": "bike-demand-predict",
+  "role": "bike-demand-predict-role",
+  "permissions_boundary": "bike-demand-predict-boundary",
+  "bucket_prefix": "bike-demand-mlops",
+  "tags": {
+    "project": "cloud-mlops-assignment",
+    "owner": "student"
+  },
+  "tags_sha256": "3d2414b38f31e600fe5e4ac2587e3f1664bfee741f167ad68ad64f9936144328",
+  "bucket": "bike-demand-mlops-ap-northeast-2-8956a8fe",
+  "log_group": "/aws/lambda/bike-demand-predict",
+  "regions_unreachable": [],
+  "run_log_unreadable_lines": 0,
+  "renamed_leftovers": [],
+  "before": {
+    "iam_role": {
+      "exists": true,
+      "ours": true,
+      "inline_policies": [
+        "bike-demand-predict-ap-northeast-2"
+      ],
+      "permissions_boundary": "arn:aws:iam::<ACCOUNT_ID>:policy/bike-demand-predict-boundary"
+    },
+    "regions": {
+      "ap-northeast-2": {
+        "lambda_function": {
+          "exists": true,
+          "ours": true,
+          "state": "Active",
+          "package_type": "Zip",
+          "runtime": "python3.12",
+          "memory_mb": 1024,
+          "timeout_s": 30,
+          "last_modified": "2026-11-20T04:43:44.000+0000",
+          "versions": [
+            "$LATEST",
+            "1",
+            "2",
+            "3",
+            "4"
+          ],
+          "reserved_concurrency": null,
+          "alias_live": "4",
+          "env_MODEL_URI": "s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/f6186c0a8811/model.joblib?versionId=VPQXGVy6XJ9.RiDv8724ICuSak6XCT7D"
+        },
+        "s3_bucket": {
+          "exists": true,
+          "name": "bike-demand-mlops-ap-northeast-2-8956a8fe",
+          "ours": true,
+          "object_versions": 4,
+          "total_mb": 65.0
+        },
+        "log_group": {
+          "exists": true,
+          "ours": true,
+          "retention_days": 7,
+          "stored_bytes": 0
+        }
+      }
+    }
+  },
+  "actions": [
+    {
+      "resource": "ap-northeast-2:lambda:bike-demand-predict",
+      "result": "deleted"
+    },
+    {
+      "resource": "ap-northeast-2:logs:/aws/lambda/bike-demand-predict",
+      "result": "deleted"
+    },
+    {
+      "resource": "ap-northeast-2:s3:bike-demand-mlops-ap-northeast-2-8956a8fe",
+      "result": "deleted"
+    },
+    {
+      "resource": "iam:bike-demand-predict-role",
+      "result": "deleted"
+    },
+    {
+      "resource": "iam-policy:bike-demand-predict-boundary",
+      "result": "deleted"
+    }
+  ],
+  "errors": [],
+  "after": {
+    "iam_role": {
+      "exists": false
+    },
+    "regions": {
+      "ap-northeast-2": {
+        "lambda_function": {
+          "exists": false
+        },
+        "s3_bucket": {
+          "exists": false,
+          "name": "bike-demand-mlops-ap-northeast-2-8956a8fe"
+        },
+        "log_group": {
+          "exists": false
+        }
+      }
+    }
+  },
+  "not_ours": [],
+  "buckets_gone": [
+    "bike-demand-mlops-ap-northeast-2-8956a8fe"
+  ],
+  "all_gone": true,
+  "other_account_regions": [],
+  "regions_ignored": []
+}

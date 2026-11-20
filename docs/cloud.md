@@ -1,6 +1,6 @@
 # 클라우드 실행
 
-진행 상태: 구성과 코드는 완성했고 배포 패키지 빌드(`package`)는 로컬에서 실행했다. 자원 생성, 배포, 버전 게시, 별칭, 상태 조회, 정리의 흐름은 모의 AWS(moto) 테스트로 확인했다. 이 테스트에서는 배포 전 확인을 대체하고, 작은 가짜 zip을 올리고, Lambda 호출을 로컬 핸들러로 대신한다. 실제 AWS에서의 배포(`deploy`), 클라우드 검사(`smoke`), 클라우드 평가(`cloud-eval`), 오류 재현, 정리는 아직 실행하지 않았다. 실행하면 3절과 5절, 그리고 [operations.md](operations.md)를 실제 기록으로 채운다.
+진행 상태 (2026-11-20): 실제 AWS(서울 리전)에서 배포, 클라우드 검사, 클라우드 평가, `live` 별칭, 잘못된 모델 경로 오류의 재현과 수정, 새 폴더 재실행, 자원 정리와 정리 후 상태 조회까지 실행했다. 결과는 3절과 5절, [operations.md](operations.md)에 있다. 자원은 모두 지웠으므로 지금은 Lambda를 호출할 수 없다.
 
 ## 1. 구성과 선택 이유
 
@@ -25,17 +25,17 @@
 
 | 선택 | 이유 |
 |---|---|
-| AWS Lambda | 운영 담당자가 하루 한두 번 다음 날 24시간 예보를 넣어 호출하는 용도다. 상시 서버나 화면이 필요 없고, 호출할 때만 실행되어 요청이 없으면 비용이 없다. 모델이 0.7MB로 작아 함수 하나로 충분하다. Lambda에서의 실제 처리 시간과 메모리 사용량은 배포 후 REPORT 로그로 기록한다 |
+| AWS Lambda | 운영 담당자가 하루 한두 번 다음 날 24시간 예보를 넣어 호출하는 용도다. 상시 서버나 화면이 필요 없고, 호출할 때만 실행되어 요청이 없으면 비용이 없다. 모델이 0.7MB로 작아 함수 하나로 충분하다. 실제 처리 시간과 메모리 사용량은 3절에 있다 |
 | 직접 호출 (`lambda:InvokeFunction`), 공개 주소 없음 | 사용자가 담당자 몇 명뿐이라 공개 HTTP 주소를 열 이유가 없다. IAM 권한이 있는 사람만 호출할 수 있어 인증을 따로 만들지 않았다 |
 | `live` 별칭 | 사용자는 `live`로 호출한다. `live`는 smoke와 cloud-eval을 모두 통과한 버전만 가리키므로, 배포나 검사 도중 실패해 `$LATEST`나 새 버전이 어중간한 상태여도 사용자 호출이 검사하지 않은 버전으로 가지 않는다. 메모리, 제한 시간, 환경 변수는 게시한 버전마다 고정되지만, 예약 동시성(2)과 실행 역할의 권한은 모든 버전이 함께 쓴다. 그래서 검사 중에는 `live` 호출과 동시 실행 자리를 나눠 쓰고, 예약 동시성 변경은 `live`에도 바로 적용된다. 역할 권한은 이 과제의 모든 버킷을 대상으로 잡아 두어, 버킷이 바뀌어도 `live`가 쓰던 모델을 계속 읽을 수 있다 |
 | 모델은 S3에 두고 실행할 때 내려받음 | 모델 버전을 코드 패키지와 따로 관리한다. 모델 경로에 모델 sha256 앞 12자리를 넣어(`models/hgb-v1/<sha12>/model.joblib`) 내용이 다른 모델은 다른 객체가 되게 하고, Lambda 환경 변수 `MODEL_URI`에 S3 객체 버전 ID까지 적는다(`...model.joblib?versionId=...`). 그래서 다시 학습해 올려도 이미 게시한 Lambda 버전이나 `live`가 가리키는 모델 파일은 덮이거나 수명 주기 규칙으로 지워지지 않는다 |
-| 같은 파일은 다시 올리지 않음 | 업로드 전에 S3의 현재 객체에 적힌 sha256을 보고, 같으면 그 객체 버전을 그대로 쓴다. 함수 설정의 설명은 고정 문구이고 커밋 정보는 버전 설명에만 넣는다. 그래서 모델, 코드, 설정이 그대로면 Lambda 설정도 그대로다. 이 경우 AWS 문서에 따르면 PublishVersion은 새 번호를 만들지 않고 기존 번호를 돌려주며, 버전 설명은 처음 게시할 때의 커밋으로 남는다. 이번 배포의 커밋은 `deploy.json`과 실행 기록에 남는다. 이 동작은 실제 AWS에서 확인할 부분이다(moto는 매번 새 번호를 만든다) |
+| 같은 파일은 다시 올리지 않음 | 업로드 전에 S3의 현재 객체에 적힌 sha256을 보고, 같으면 그 객체 버전을 그대로 쓴다. 함수 설정의 설명은 고정 문구이고 커밋 정보는 버전 설명에만 넣는다. 그래서 모델, 코드, 설정이 그대로면 Lambda 설정도 그대로다. AWS 문서에는 코드와 설정이 바뀌지 않았으면 PublishVersion이 새 버전을 만들지 않는다고 되어 있어 기존 번호를 돌려받을 것으로 예상했다. 실제로는 새 폴더 재실행에서 버전 3과 코드 sha256, 환경 변수가 모두 같은데도 버전 4가 새로 게시됐다. 도구는 게시 전에 항상 UpdateFunctionCode와 UpdateFunctionConfiguration을 부르고 버전 설명(커밋)도 달라서, 그중 무엇 때문인지는 따로 가리지 않았다. release는 번호가 아니라 버전의 정체로 검사 기록을 맞춰 보므로 결과에는 영향이 없다 |
 | 버전 관리 반영 대기 | AWS 문서는 버킷에서 버전 관리를 처음 켠 뒤 반영에 최대 15분이 걸릴 수 있다고 한다. 업로드 결과에 객체 버전이 없거나 그 버전을 읽지 못하면 30초 간격으로 다시 올리며, 처음을 포함해 최대 30번 올린다(기다림은 최대 14분 30초) |
 | zip 패키지 (컨테이너 이미지 아님) | 이 PC에 Docker가 없다. scikit-learn, scipy, numpy의 리눅스용 휠을 `pip --platform manylinux...`로 받아 zip을 만든다. Lambda는 코드 폴더(/var/task)에 쓸 수 없어 콜드 스타트마다 라이브러리를 다시 컴파일하게 되므로 .pyc를 미리 만들어 넣는다. Python 3.12에서 빌드할 때만 만들고, 소스와 대조하지 않는 방식(unchecked-hash)을 써서 압축 해제 시각과 상관없이 그대로 쓰이게 하며, 소스 경로는 `/var/task/...`로 기록한다. /var/task는 읽기 전용이라 소스가 바뀔 일이 없다. 컴파일한 수와 실패한 파일은 `package.json`에 남는다. 압축 해제 198.94MB로 Lambda 한도 250MB 안이다. zip이 직접 업로드 한도 50MB를 넘어 S3를 거쳐 올린다 |
 | python3.12, x86_64 | 로컬 학습 환경과 같은 Python, 라이브러리 버전으로 맞춰 저장한 모델을 그대로 불러온다. python3.12 런타임은 Amazon Linux 2023(glibc 2.34) 기반이라 manylinux_2_28 휠이 동작한다. AWS 런타임 표 기준 지원 종료는 2028-10-31이다 |
 | 서울 리전 | 사용자(한국)와 가깝고 필요한 서비스가 모두 있다. 데이터가 공개 자료라 위치 제약이 없다 |
-| 메모리 1024MB, 제한 시간 30초 | 메모리를 늘리면 CPU도 비례해서 늘어 scikit-learn을 불러오는 콜드 스타트가 빨라진다. 실제 사용량은 실행 후 REPORT 로그로 확인한다 |
-| 예약 동시성 2 | 실수로 반복 호출해도 동시에 2개까지만 돌아 비용과 영향 범위가 제한된다. 새 계정은 동시 실행 할당량이 낮아 예약이 거절될 수 있는데, 그 경우만 기록에 남기고 계속한다. 권한 오류 같은 다른 오류는 실패로 처리한다 |
+| 메모리 1024MB, 제한 시간 30초 | 메모리를 늘리면 CPU도 비례해서 늘어 scikit-learn을 불러오는 콜드 스타트가 빨라진다. 실제로는 최대 244MB를 썼고 콜드 스타트의 첫 요청은 4.3~4.5초였다(3절) |
+| 예약 동시성 2 | 실수로 반복 호출해도 동시에 2개까지만 돌아 비용과 영향 범위가 제한된다. 새 계정은 동시 실행 할당량이 낮아 예약이 거절될 수 있는데, 그 경우만 기록에 남기고 계속한다. 권한 오류 같은 다른 오류는 실패로 처리한다. 이번 계정에서는 실제로 거절됐다(3절) |
 | 배포마다 함수 버전 게시 | 버전마다 코드 sha256, 환경 변수(모델 객체 버전 포함), 버전 설명(git 커밋, 모델 버전, 패키지 sha)이 고정된다. 커밋하지 않은 코드로 배포하면 설명에 `+dirty`가 붙는다. 검사와 평가는 `$LATEST`가 아니라 같은 실행의 `deploy`가 게시한 번호(따로 실행하면 가장 최근 번호)로 호출해서, 어느 코드와 모델이 답했는지 기록에 남긴다 |
 
 ### 설정
@@ -113,13 +113,32 @@ IAM 역할은 리전과 상관없는 자원이라, 모든 리전에서 이 과�
 
 ## 3. 실제 입력에서 결과까지 (실행 결과)
 
-실행 전이다. 실행 순서와 확인할 것은 다음과 같다.
+2026-11-20에 과제용으로 새로 만든 AWS 계정(서울 리전)에서 실행했다. 처음 실행은 `python -m bikeml --profile <프로필> run cloud`(run_id `20261120T132357-9dc6e6`, 커밋 8b1d79c)이고, 다섯 단계가 모두 한 번에 성공했다.
 
-1. `python -m bikeml --profile <프로필> run cloud`: package, deploy, smoke, cloud-eval, release를 순서대로 실행한다.
-2. deploy: 배포 전 확인, 권한 경계 확인, 역할·버킷·로그 그룹 생성, 모델과 패키지 업로드, 함수 생성, 버전 게시. 결과는 `results/cloud/deploy.json`
-3. smoke: 로컬과 같은 12개 사례를 Lambda에 보낸다. 응답, 요청 ID, 실행 시간, 메모리 사용량(REPORT 로그), Lambda 안의 라이브러리 버전을 남긴다. 결과는 `results/service_check/cloud.json`
-4. cloud-eval: 평가 자료 2,888건을 500건씩 6번 보내 MAE를 계산하고 로컬 예측과 같은지 비교한다. 결과는 `results/cloud/cloud_eval.json`
-5. release: 두 검사를 모두 통과했고 정체가 같은 버전에 `live` 별칭을 붙인다. 결과는 `results/cloud/release.json`(버전 정체와 이전 `live` 버전 포함)
+| 단계 | 걸린 시간 | 결과 |
+|---|---|---|
+| package | 49.4초 | zip sha256 `0bebe5c1e01a...`, 64.29MB. 로컬에서 만든 것과 같은 해시 |
+| deploy | 20.8초 | 권한 경계, 역할, 버킷, 로그 그룹을 새로 만들고 모델(0.7MB), metadata, zip을 올린 뒤 함수를 만들어 버전 1을 게시했다 |
+| smoke | 6.3초 | 12/12 통과. 역할을 새로 만든 실행이라 먼저 권한 확인 요청을 보냈고 첫 요청에 200을 받아 기다리지 않았다 |
+| cloud-eval | 1.9초 | 2,888건을 500건씩 6번 보냄. MAE 47.53, RMSE 72.95, 로컬 예측과 최대 차이 0.0 |
+| release | 1.1초 | `live` 별칭을 버전 1에 만들었다(이전 `live` 없음) |
+
+예약 동시성 2는 적용되지 않았다. 새 계정의 동시 실행 한도가 10인데, AWS는 예약하지 않은 자리를 최소 10개 남겨야 해서 `InvalidParameterValueException`으로 거절했다. 설계한 대로 이유를 `deploy.json`의 `reserved_concurrency`에 남기고 계속했다. 그래서 이 계정에서는 동시 실행 상한이 계정 한도 10이다.
+
+입력에서 결과까지: 운영 담당자가 보낸 2012-12-03 하루 24시간 요청([samples/generated/request_2012-12-03.json](../samples/generated/request_2012-12-03.json))에 Lambda가 시간대별 예측을 돌려줬다. 시간당 MAE 34.75대, 하루 합계는 실제 6,234대, 예측 5,626대로 로컬 결과와 같다([results/service_check/cloud.json](../results/service_check/cloud.json)의 `sample_day`). 응답에는 Lambda 안의 실행 환경(Python 3.12.16, scikit-learn 1.9.1, numpy 2.5.5, 런타임이 제공하는 boto3 1.42.97)이 함께 온다. scikit-learn과 numpy가 학습 환경과 같아 저장한 모델을 그대로 불러왔다.
+
+Lambda 실행 측정 (CloudWatch REPORT 로그, 메모리 1024MB)
+
+| 항목 | 값 |
+|---|---|
+| 콜드 스타트 | 초기화 0.31~0.33초, 첫 요청 4.3~4.5초. 첫 요청 안에서 S3에서 모델을 받고 sha256을 확인하고 scikit-learn을 불러오는 시간이 대부분이다(로그의 `model_loaded.load_ms` 4,265~4,444ms) |
+| 이후 요청 | 1건 1.3~9.9ms, 500건 28~47ms, 가장 긴 요청 115ms |
+| 최대 메모리 사용 | 244MB |
+| 전체 호출 (정리 전 로그 기준) | 71회, 과금 시간 합계 16.8초(16.8 GB-초). 버전별로 1: 20회, 2(오류 재현): 13회, 3: 19회, 4: 19회. `MODEL_LOAD_FAILED`는 버전 2의 13회뿐 |
+
+메모리를 줄이면 GB-초 단가는 내려가지만 CPU도 같이 줄어 콜드 스타트가 길어진다. 하루 한두 번 호출하는 용도라 비용 차이가 작아 1024MB를 유지했다.
+
+결과 파일: [results/cloud/deploy.json](../results/cloud/deploy.json), [results/service_check/cloud.json](../results/service_check/cloud.json), [results/cloud/cloud_eval.json](../results/cloud/cloud_eval.json), [results/cloud/predictions_cloud.csv](../results/cloud/predictions_cloud.csv), [results/cloud/release.json](../results/cloud/release.json). 지금 이 파일들은 5절의 수정과 새 폴더 재실행([operations.md](operations.md) 1절) 뒤의 마지막 실행 결과이고, 처음 실행의 수치는 위 표와 같다. 단계별 기록은 [runs/run_log.jsonl](../runs/run_log.jsonl)에 있다.
 
 ## 4. 실행 기록과 실패 처리
 
@@ -164,10 +183,48 @@ python -m bikeml --config config/demo_strict_criteria.json run evaluate check-lo
 
 ## 5. 오류 재현과 복구
 
-실행 전이다. 과제 예시 중 "잘못된 모델 경로"를 클라우드에서 재현할 계획이다.
+과제 예시 중 "잘못된 모델 경로"를 실제 AWS(서울 리전)에서 재현하고 고쳤다.
 
-1. 재현: `python -m bikeml --profile <프로필> run deploy smoke cloud-eval release --model-uri-override s3://<버킷>/models/hgb-v1/model.pkl` (실제 파일은 `model.joblib`). 이 배포 기록은 `results/cloud/deploy_override.json`에 따로 남는다.
-2. 예상 영향: 모든 요청이 `500 MODEL_LOAD_FAILED`, smoke 실패, cloud-eval과 release는 실행하지 않음(skipped). release가 실행되지 않으므로 `live` 별칭은 이전 정상 버전을 그대로 가리킨다.
-3. 원인 조사: 응답 메시지와 CloudWatch 로그를 보고, 운영자 권한으로 `aws s3api head-object`를 실행해 비교한다. S3는 `s3:ListBucket` 권한이 없는 요청자에게 없는 객체를 404가 아니라 403(Forbidden)으로 알린다. Lambda 역할에는 이 권한이 없어서 403으로 보일 것으로 예상하며, 이 점도 확인한다.
-4. 수정: 경로를 바로잡아 다시 배포하고, 배포 단계에서 `MODEL_URI`가 가리키는 객체가 있는지와 sha256이 맞는지 확인하는 코드를 추가한다.
-5. 재검사: 실패했던 같은 명령과 정상 입력(smoke 12건, cloud-eval 2,888건)을 다시 실행해 결과를 남긴다.
+| 순서 | run_id | 커밋 | 결과 |
+|---|---|---|---|
+| 정상 배포 | `20261120T132357-9dc6e6` | 8b1d79c | 버전 1. smoke 12/12, cloud-eval 통과, `live`를 1에 만듦 |
+| 재현 | `20261120T132643-433f7b` | f67fa40 | deploy 성공(버전 2). smoke 0/12, cloud-eval과 release 건너뜀 |
+| 고친 뒤 같은 명령 | `20261120T133547-3cdc6a` | fa9c5d4 | deploy가 함수를 바꾸기 전에 멈춤. 새 버전 없음 |
+| 고친 뒤 정상 명령 | `20261120T133555-5dacd4` | fa9c5d4 | 버전 3. smoke 12/12, cloud-eval 통과, `live`를 1에서 3으로 옮김 |
+
+1. 재현 명령
+
+```
+python -m bikeml --profile <프로필> run deploy smoke cloud-eval release --model-uri-override s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl
+```
+
+실제 모델은 `models/hgb-v1/f6186c0a8811/model.joblib`에 있고, `models/hgb-v1/model.pkl`이라는 객체는 없다. 이 배포 기록은 [results/cloud/deploy_override.json](../results/cloud/deploy_override.json)에 따로 남아 정상 배포 기록을 덮지 않았다.
+
+2. 영향
+
+- smoke의 12개 사례가 모두 `500 MODEL_LOAD_FAILED`로 실패했다([results/failed/20261120T132643-433f7b_smoke/](../results/failed/20261120T132643-433f7b_smoke/)). 잘못된 입력 사례 8개도 400이 아니라 500을 받았다. 핸들러가 입력을 보기 전에 모델부터 불러오기 때문이다. 모델이 없으면 어떤 요청에도 예측을 줄 수 없으므로 이 순서는 그대로 두었다.
+- cloud-eval과 release는 실행되지 않았다(skipped). `live`는 계속 버전 1을 가리켰으므로 `live`로 부르는 사용자 호출에는 영향이 없었다.
+- 핸들러는 실패한 모델을 저장해 두지 않고 요청마다 다시 받으려 하므로, 경로만 고치면 함수를 다시 만들지 않아도 복구된다.
+
+3. 원인 조사
+
+- 응답과 CloudWatch 로그의 메시지: `모델 파일을 가져오지 못했습니다 (s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl): ClientError: An error occurred (403) when calling the HeadObject operation: Forbidden`
+- 운영자 키로 같은 객체에 `HeadObject`를 부르면 404(Not Found)였다. 실제 모델 경로는 200이고 객체 메타데이터의 sha256이 모델과 같았다.
+- Lambda 실행 역할의 권한은 `logs:CreateLogStream`, `logs:PutLogEvents`, `s3:GetObject`, `s3:GetObjectVersion`뿐이고 `s3:ListBucket`이 없다. S3는 `s3:ListBucket` 권한이 없는 요청자에게는 없는 객체를 404가 아니라 403으로 알린다. 그래서 같은 "없는 객체"가 Lambda에서는 403, 운영자에게는 404로 보였다. 403만 보고 권한 문제로 판단해 역할 권한을 넓히면 원인은 그대로 둔 채 권한만 커진다.
+- 원인: `deploy`가 `MODEL_URI`가 가리키는 객체가 실제로 있는지 확인하지 않고 Lambda에 넘겼다.
+
+4. 수정 (커밋 fa9c5d4)
+
+`deploy`가 함수를 만들거나 바꾸기 전에 `MODEL_URI`를 확인한다([bikeml/cloud.py](../bikeml/cloud.py)의 `check_model_uri`).
+
+- 경로가 이 과제의 버킷(`bike-demand-mlops-*`)의 `models/` 아래인지 본다. Lambda 역할이 읽을 수 있는 범위다.
+- 운영자 권한으로 `HeadObject`를 불러 객체(경로에 객체 버전이 있으면 그 버전)가 있는지 본다.
+- 객체 메타데이터의 sha256이 배포하는 모델의 sha256과 같은지 본다. 메타데이터만 맞추고 내용이 다른 파일은 Lambda가 받은 파일의 sha256을 다시 계산해 막는다.
+
+하나라도 틀리면 함수와 버전을 건드리지 않고 멈춘다. 확인 결과는 `deploy.json`의 `model_uri_check`에 남는다. 모의 AWS 테스트에 없는 객체, sha256이 다른 객체, 역할이 읽을 수 없는 경로를 넣었을 때 새 버전이 생기지 않고 함수 설정도 그대로인지 확인하는 사례를 추가했다. smoke 실패 문구도 실패한 사례 수와 그 밖의 문제 수를 나눠 적게 바꿨다(재현 때는 12개 사례에 예시 날짜 비교 실패 1건이 더해져 "13건"으로 나왔다). 예시 날짜 비교 실패의 안내는 "prepare 결과 확인"뿐이었는데, 이번처럼 `normal_day_24h` 응답이 실패해도 생기므로 둘 다 확인하라고 바꿨다.
+
+5. 재검사
+
+- 같은 명령: `deploy`가 4.1초 만에 `MODEL_URI 가 가리키는 객체가 없습니다`로 멈췄고 smoke, cloud-eval, release는 건너뛰었다. 함수 버전은 늘지 않았다. 지금 코드로는 재현 명령이 이렇게 deploy에서 멈추므로, 2절의 재현은 커밋 f67fa40으로 실행한 기록이다.
+- 정상 명령: 모델, metadata, zip은 이미 같은 sha256의 객체가 있어 다시 올리지 않았다. 재현 때 바뀐 `$LATEST`의 `MODEL_URI`를 되돌리면서 버전 3이 게시됐고, smoke 12/12, cloud-eval 2,888건(MAE 47.53, 로컬 예측과 최대 차이 0.0)을 통과했다. release가 `live`를 1에서 3으로 옮겼고 `release.json`에 `previous_live: "1"`이 남았다.
+- 함수에 남은 버전: 1(정상), 2(재현, `model.pkl`), 3(고친 뒤 정상). 버전 2는 검사를 통과하지 못해 `live`가 가리킨 적이 없다.
