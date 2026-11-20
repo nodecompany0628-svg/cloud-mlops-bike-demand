@@ -1,0 +1,25 @@
+Traceback (most recent call last):
+  File "<REPO>\bikeml\cloud.py", line 436, in check_model_uri
+    head = self.s3.head_object(**kw)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<REPO>\.venv\Lib\site-packages\botocore\client.py", line 606, in _api_call
+    return self._make_api_call(operation_name, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<REPO>\.venv\Lib\site-packages\botocore\context.py", line 123, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "<REPO>\.venv\Lib\site-packages\botocore\client.py", line 1094, in _make_api_call
+    raise error_class(parsed_response, operation_name)
+botocore.exceptions.ClientError: An error occurred (404) when calling the HeadObject operation: Not Found
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<REPO>\bikeml\runlog.py", line 240, in run_steps
+    registry[name](ctx)
+  File "<REPO>\bikeml\cloud.py", line 1056, in step_deploy
+    res["model_uri_check"] = cloud.check_model_uri(model_uri, meta["model_sha256"])
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<REPO>\bikeml\cloud.py", line 440, in check_model_uri
+    raise RuntimeError(f"MODEL_URI 가 가리키는 객체가 없습니다: {uri}") from e
+RuntimeError: MODEL_URI 가 가리키는 객체가 없습니다: s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/model.pkl

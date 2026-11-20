@@ -1,12 +1,12 @@
 {
   "function": "bike-demand-predict",
-  "function_version": "1",
+  "function_version": "3",
   "region": "ap-northeast-2",
   "identity": {
     "region": "ap-northeast-2",
     "function": "bike-demand-predict",
-    "function_version": "1",
-    "revision_id": "24d5b466-6af6-4034-b540-7d244c0f60a7",
+    "function_version": "3",
+    "revision_id": "b9c702fd-ad32-404f-aac4-95d7bae52129",
     "code_sha256": "C+vlweAa5sGSuH1YsXXAFVMSSOvg/FTM1Wb1kaC8gGY=",
     "model_uri": "s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/f6186c0a8811/model.joblib?versionId=VPQXGVy6XJ9.RiDv8724ICuSak6XCT7D",
     "model_version": "hgb-v1",
@@ -41,13 +41,13 @@
     {
       "rows": "0-499",
       "status": 200,
-      "request_id": "616432d6-d55b-4c46-83fa-f43dc576ac46",
-      "function_version": "1",
+      "request_id": "78a8b77c-5fc8-4758-8828-b49807d6e686",
+      "function_version": "3",
       "function_error": null,
-      "client_ms": 77.0,
+      "client_ms": 72.7,
       "report": {
-        "duration_ms": 37.19,
-        "billed_ms": 38.0,
+        "duration_ms": 34.81,
+        "billed_ms": 35.0,
         "memory_mb": 1024.0,
         "max_memory_used_mb": 244.0
       }
@@ -55,13 +55,13 @@
     {
       "rows": "500-999",
       "status": 200,
-      "request_id": "873b3211-1a7c-4687-9382-0bcb0de03c01",
-      "function_version": "1",
+      "request_id": "310ed7df-c6fc-40ae-b6bc-27b718ad3f6b",
+      "function_version": "3",
       "function_error": null,
-      "client_ms": 67.2,
+      "client_ms": 62.0,
       "report": {
-        "duration_ms": 38.73,
-        "billed_ms": 39.0,
+        "duration_ms": 31.9,
+        "billed_ms": 32.0,
         "memory_mb": 1024.0,
         "max_memory_used_mb": 244.0
       }
@@ -69,13 +69,13 @@
     {
       "rows": "1000-1499",
       "status": 200,
-      "request_id": "31d11bda-ef15-4ef8-bdfc-2119ec67eb5a",
-      "function_version": "1",
+      "request_id": "d29cb11a-ce50-4020-a87f-b4f3da2a402a",
+      "function_version": "3",
       "function_error": null,
-      "client_ms": 64.8,
+      "client_ms": 63.3,
       "report": {
-        "duration_ms": 37.91,
-        "billed_ms": 38.0,
+        "duration_ms": 32.86,
+        "billed_ms": 33.0,
         "memory_mb": 1024.0,
         "max_memory_used_mb": 244.0
       }
@@ -83,13 +83,13 @@
     {
       "rows": "1500-1999",
       "status": 200,
-      "request_id": "488d1f3f-b0dd-46e5-ad55-92141b20fbf2",
-      "function_version": "1",
+      "request_id": "8fa86e9a-e5f6-4107-877c-742e2451e150",
+      "function_version": "3",
       "function_error": null,
-      "client_ms": 67.0,
+      "client_ms": 74.8,
       "report": {
-        "duration_ms": 41.44,
-        "billed_ms": 42.0,
+        "duration_ms": 38.94,
+        "billed_ms": 39.0,
         "memory_mb": 1024.0,
         "max_memory_used_mb": 244.0
       }
@@ -97,13 +97,13 @@
     {
       "rows": "2000-2499",
       "status": 200,
-      "request_id": "0d401fa0-39c8-49c9-835d-2149876c8fcf",
-      "function_version": "1",
+      "request_id": "ffb36201-5ff5-453d-b70d-f3b1c04ea66d",
+      "function_version": "3",
       "function_error": null,
-      "client_ms": 65.1,
+      "client_ms": 63.5,
       "report": {
-        "duration_ms": 38.09,
-        "billed_ms": 39.0,
+        "duration_ms": 35.65,
+        "billed_ms": 36.0,
         "memory_mb": 1024.0,
         "max_memory_used_mb": 244.0
       }
@@ -111,13 +111,13 @@
     {
       "rows": "2500-2887",
       "status": 200,
-      "request_id": "97a68b02-79a5-40b4-a731-3653001dbb40",
-      "function_version": "1",
+      "request_id": "b699e916-511d-4ba9-9c78-99db420e0c33",
+      "function_version": "3",
       "function_error": null,
-      "client_ms": 74.8,
+      "client_ms": 54.3,
       "report": {
-        "duration_ms": 29.5,
-        "billed_ms": 30.0,
+        "duration_ms": 31.3,
+        "billed_ms": 32.0,
         "memory_mb": 1024.0,
         "max_memory_used_mb": 244.0
       }

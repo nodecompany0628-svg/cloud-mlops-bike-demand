@@ -15,34 +15,40 @@
     "bucket": "bike-demand-mlops-ap-northeast-2-8956a8fe",
     "log_group": "/aws/lambda/bike-demand-predict"
   },
-  "permissions_boundary": "created",
-  "role": "created",
-  "bucket": "created",
-  "log_group": "created",
+  "permissions_boundary": "exists",
+  "role": "exists",
+  "bucket": "exists",
+  "log_group": "exists",
   "model_upload": {
     "uri": "s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/f6186c0a8811/model.joblib",
     "version_id": "VPQXGVy6XJ9.RiDv8724ICuSak6XCT7D",
-    "uploaded": true
+    "uploaded": false
   },
   "metadata_upload": {
     "uri": "s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/f6186c0a8811/metadata.json",
     "version_id": "vCqrWamv4zdAau7UodGrnGsRiw_DOgvV",
-    "uploaded": true
+    "uploaded": false
   },
   "package_upload": {
     "uri": "s3://bike-demand-mlops-ap-northeast-2-8956a8fe/packages/lambda-0bebe5c1e01a.zip",
     "version_id": "C1zoDEwpES0lWvKx5V4_BBUHr6fnr3_T",
-    "uploaded": true
+    "uploaded": false
+  },
+  "model_uri_check": {
+    "uri": "s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/f6186c0a8811/model.joblib?versionId=VPQXGVy6XJ9.RiDv8724ICuSak6XCT7D",
+    "exists": true,
+    "sha256_matches": true,
+    "version_id": "VPQXGVy6XJ9.RiDv8724ICuSak6XCT7D"
   },
   "function": {
-    "action": "created",
-    "version": "1",
+    "action": "updated",
+    "version": "3",
     "code_sha256": "C+vlweAa5sGSuH1YsXXAFVMSSOvg/FTM1Wb1kaC8gGY=",
-    "last_modified": "2026-11-20T04:25:00.493+0000",
+    "last_modified": "2026-11-20T04:36:10.000+0000",
     "memory_mb": 1024,
     "timeout_s": 30,
     "runtime": "python3.12",
-    "version_description": "git 8b1d79c model hgb-v1 pkg 0bebe5c1e01a",
+    "version_description": "git fa9c5d4 model hgb-v1 pkg 0bebe5c1e01a",
     "reserved_concurrency": {
       "set": false,
       "reason": "예약 동시성을 설정하지 못함(대개 계정 동시 실행 한도가 낮을 때): An error occurred (InvalidParameterValueException) when calling the PutFunctionConcurrency operation: Specified ReservedConcurrentExecutions for function decreases account's UnreservedConcurrentExecution below its minimum value of [10]."
