@@ -1,0 +1,582 @@
+{
+  "target": "lambda:bike-demand-predict:1",
+  "model": {
+    "version": "hgb-v1",
+    "sha256": "f6186c0a881176ccb676683346571a8fa1c5fc52aa0a4cfd0c6768d241bfded0",
+    "sklearn": "1.9.1",
+    "numpy": "2.5.5"
+  },
+  "runtime": {
+    "python": "3.12.16",
+    "scikit-learn": "1.9.1",
+    "numpy": "2.5.5",
+    "boto3": "1.42.97",
+    "execution_env": "AWS_Lambda_python3.12"
+  },
+  "passed": 12,
+  "total": 12,
+  "all_passed": true,
+  "cases": [
+    {
+      "name": "normal_one_hour",
+      "about": "정상 입력 1건 (2012-10-01 월요일 출근 시간)",
+      "expect": {
+        "status": 200,
+        "n": 1
+      },
+      "status": 200,
+      "passed": true,
+      "problems": [],
+      "error": null,
+      "warnings": null,
+      "predictions_head": [
+        {
+          "datetime": "2012-10-01T08:00",
+          "predicted_count": 647,
+          "predicted_value": 646.93
+        }
+      ],
+      "meta": {
+        "request_id": "f74cdc68-d2ac-42bd-9b9a-5a37c7f433f7",
+        "function_version": "1",
+        "function_error": null,
+        "client_ms": 31.9,
+        "report": {
+          "duration_ms": 9.86,
+          "billed_ms": 10.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 244.0
+        }
+      }
+    },
+    {
+      "name": "normal_day_24h",
+      "about": "정상 입력 24건 (평가 기간 하루 전체), 두 번 보내 결과가 같은지 확인",
+      "expect": {
+        "status": 200,
+        "n": 24
+      },
+      "status": 200,
+      "passed": true,
+      "problems": [],
+      "error": null,
+      "warnings": null,
+      "predictions_head": [
+        {
+          "datetime": "2012-12-03T00:00",
+          "predicted_count": 29,
+          "predicted_value": 29.45
+        },
+        {
+          "datetime": "2012-12-03T01:00",
+          "predicted_count": 13,
+          "predicted_value": 13.04
+        },
+        {
+          "datetime": "2012-12-03T02:00",
+          "predicted_count": 9,
+          "predicted_value": 8.84
+        }
+      ],
+      "meta": {
+        "request_id": "3208f8ce-de2c-4316-bef3-bab44bc6fca8",
+        "function_version": "1",
+        "function_error": null,
+        "client_ms": 41.7,
+        "report": {
+          "duration_ms": 8.52,
+          "billed_ms": 9.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 244.0
+        }
+      }
+    },
+    {
+      "name": "target_field_ignored",
+      "about": "정답(cnt)을 입력에 넣어도 예측에 쓰이지 않음",
+      "expect": {
+        "status": 200,
+        "n": 1,
+        "same_prediction_as": "normal_one_hour",
+        "warning_contains": "알 수 없는 필드"
+      },
+      "status": 200,
+      "passed": true,
+      "problems": [],
+      "error": null,
+      "warnings": [
+        "[0] 알 수 없는 필드는 무시했습니다: cnt"
+      ],
+      "predictions_head": [
+        {
+          "datetime": "2012-10-01T08:00",
+          "predicted_count": 647,
+          "predicted_value": 646.93
+        }
+      ],
+      "meta": {
+        "request_id": "6b141ac0-2b6a-4267-b950-f895dcbc54ae",
+        "function_version": "1",
+        "function_error": null,
+        "client_ms": 27.1,
+        "report": {
+          "duration_ms": 8.1,
+          "billed_ms": 9.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 244.0
+        }
+      }
+    },
+    {
+      "name": "year_outside_training",
+      "about": "학습 기간 밖 연도는 경고와 함께 2012년 수준으로 계산",
+      "expect": {
+        "status": 200,
+        "n": 1,
+        "warning_contains": "학습 기간"
+      },
+      "status": 200,
+      "passed": true,
+      "problems": [],
+      "error": null,
+      "warnings": [
+        "[0] 2026년은 학습 기간(2011~2012) 밖이라 2012년 수준으로 계산했습니다"
+      ],
+      "predictions_head": [
+        {
+          "datetime": "2026-05-05T18:00",
+          "predicted_count": 476,
+          "predicted_value": 475.8
+        }
+      ],
+      "meta": {
+        "request_id": "9fb3dce9-1304-4b81-a5c9-5e5ad401423e",
+        "function_version": "1",
+        "function_error": null,
+        "client_ms": 32.9,
+        "report": {
+          "duration_ms": 8.03,
+          "billed_ms": 9.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 244.0
+        }
+      }
+    },
+    {
+      "name": "missing_humidity",
+      "about": "필수 입력 누락",
+      "expect": {
+        "status": 400,
+        "error_code": "INVALID_INPUT",
+        "error_field": "humidity"
+      },
+      "status": 400,
+      "passed": true,
+      "problems": [],
+      "error": {
+        "code": "INVALID_INPUT",
+        "message": "1건의 입력이 잘못되었습니다",
+        "details": [
+          {
+            "index": 0,
+            "field": "humidity",
+            "message": "필수 입력이 없습니다"
+          }
+        ]
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "83df4132-eec3-46bd-b9ce-9fc1551118df",
+        "function_version": "1",
+        "function_error": null,
+        "client_ms": 21.7,
+        "report": {
+          "duration_ms": 1.39,
+          "billed_ms": 2.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 244.0
+        }
+      }
+    },
+    {
+      "name": "hour_out_of_range",
+      "about": "없는 시각(25시)",
+      "expect": {
+        "status": 400,
+        "error_code": "INVALID_INPUT",
+        "error_field": "datetime"
+      },
+      "status": 400,
+      "passed": true,
+      "problems": [],
+      "error": {
+        "code": "INVALID_INPUT",
+        "message": "1건의 입력이 잘못되었습니다",
+        "details": [
+          {
+            "index": 0,
+            "field": "datetime",
+            "message": "날짜·시각 형식이 아닙니다: '2012-10-01T25:00' (예: 2012-10-01T08:00)"
+          }
+        ]
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "ea53eb5c-9874-42ab-bbe3-3303317c82b0",
+        "function_version": "1",
+        "function_error": null,
+        "client_ms": 22.2,
+        "report": {
+          "duration_ms": 1.34,
+          "billed_ms": 2.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 244.0
+        }
+      }
+    },
+    {
+      "name": "weather_out_of_range",
+      "about": "날씨 코드 5 (허용 1~4)",
+      "expect": {
+        "status": 400,
+        "error_code": "INVALID_INPUT",
+        "error_field": "weather"
+      },
+      "status": 400,
+      "passed": true,
+      "problems": [],
+      "error": {
+        "code": "INVALID_INPUT",
+        "message": "1건의 입력이 잘못되었습니다",
+        "details": [
+          {
+            "index": 0,
+            "field": "weather",
+            "message": "1~4 범위를 벗어났습니다: 5"
+          }
+        ]
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "299aa473-560f-4b53-96bc-fe7ff4671c4b",
+        "function_version": "1",
+        "function_error": null,
+        "client_ms": 24.3,
+        "report": {
+          "duration_ms": 1.3,
+          "billed_ms": 2.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 244.0
+        }
+      }
+    },
+    {
+      "name": "temp_as_string",
+      "about": "숫자 자리에 문자열",
+      "expect": {
+        "status": 400,
+        "error_code": "INVALID_INPUT",
+        "error_field": "temp_c"
+      },
+      "status": 400,
+      "passed": true,
+      "problems": [],
+      "error": {
+        "code": "INVALID_INPUT",
+        "message": "1건의 입력이 잘못되었습니다",
+        "details": [
+          {
+            "index": 0,
+            "field": "temp_c",
+            "message": "숫자여야 합니다"
+          }
+        ]
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "114a3cbe-9d41-472e-b7d0-2c5486697de3",
+        "function_version": "1",
+        "function_error": null,
+        "client_ms": 22.4,
+        "report": {
+          "duration_ms": 1.3,
+          "billed_ms": 2.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 244.0
+        }
+      }
+    },
+    {
+      "name": "humidity_out_of_range",
+      "about": "습도 130%",
+      "expect": {
+        "status": 400,
+        "error_code": "INVALID_INPUT",
+        "error_field": "humidity"
+      },
+      "status": 400,
+      "passed": true,
+      "problems": [],
+      "error": {
+        "code": "INVALID_INPUT",
+        "message": "1건의 입력이 잘못되었습니다",
+        "details": [
+          {
+            "index": 0,
+            "field": "humidity",
+            "message": "1.0~100.0 범위를 벗어났습니다: 130.0"
+          }
+        ]
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "25af4a12-e9dc-41bb-b2b6-d8d8bdefffb9",
+        "function_version": "1",
+        "function_error": null,
+        "client_ms": 26.4,
+        "report": {
+          "duration_ms": 1.36,
+          "billed_ms": 2.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 244.0
+        }
+      }
+    },
+    {
+      "name": "empty_instances",
+      "about": "빈 목록",
+      "expect": {
+        "status": 400,
+        "error_code": "INVALID_INPUT"
+      },
+      "status": 400,
+      "passed": true,
+      "problems": [],
+      "error": {
+        "code": "INVALID_INPUT",
+        "message": "instances 는 비어 있지 않은 목록이어야 합니다"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "d5ba56a8-3922-4f2b-af6a-aaf0ff61d684",
+        "function_version": "1",
+        "function_error": null,
+        "client_ms": 24.0,
+        "report": {
+          "duration_ms": 1.28,
+          "billed_ms": 2.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 244.0
+        }
+      }
+    },
+    {
+      "name": "no_instances_key",
+      "about": "instances 키 없음",
+      "expect": {
+        "status": 400,
+        "error_code": "INVALID_INPUT"
+      },
+      "status": 400,
+      "passed": true,
+      "problems": [],
+      "error": {
+        "code": "INVALID_INPUT",
+        "message": "요청에 instances 목록이 필요합니다"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "8c74695d-1c98-4532-ae55-58d2e1f6aeee",
+        "function_version": "1",
+        "function_error": null,
+        "client_ms": 30.9,
+        "report": {
+          "duration_ms": 1.3,
+          "billed_ms": 2.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 244.0
+        }
+      }
+    },
+    {
+      "name": "too_many_instances",
+      "about": "한도(1000건) 초과",
+      "expect": {
+        "status": 400,
+        "error_code": "TOO_MANY_INSTANCES"
+      },
+      "status": 400,
+      "passed": true,
+      "problems": [],
+      "error": {
+        "code": "TOO_MANY_INSTANCES",
+        "message": "한 번에 최대 1000건까지 보낼 수 있습니다 (받은 건수 1001)"
+      },
+      "warnings": null,
+      "predictions_head": [],
+      "meta": {
+        "request_id": "9f6d2a1d-dd9d-465b-afa7-4eafd416cb49",
+        "function_version": "1",
+        "function_error": null,
+        "client_ms": 51.6,
+        "report": {
+          "duration_ms": 4.41,
+          "billed_ms": 5.0,
+          "memory_mb": 1024.0,
+          "max_memory_used_mb": 244.0
+        }
+      }
+    }
+  ],
+  "readiness": {
+    "attempts": 1,
+    "status": 200,
+    "waited_for_permissions": false
+  },
+  "sample_day": {
+    "day": "2012-12-03",
+    "mae": 34.75,
+    "actual_total": 6234,
+    "predicted_total": 5626,
+    "hours": [
+      {
+        "datetime": "2012-12-03T00:00",
+        "actual": 21,
+        "predicted": 29
+      },
+      {
+        "datetime": "2012-12-03T01:00",
+        "actual": 13,
+        "predicted": 13
+      },
+      {
+        "datetime": "2012-12-03T02:00",
+        "actual": 10,
+        "predicted": 9
+      },
+      {
+        "datetime": "2012-12-03T03:00",
+        "actual": 8,
+        "predicted": 5
+      },
+      {
+        "datetime": "2012-12-03T04:00",
+        "actual": 5,
+        "predicted": 6
+      },
+      {
+        "datetime": "2012-12-03T05:00",
+        "actual": 38,
+        "predicted": 21
+      },
+      {
+        "datetime": "2012-12-03T06:00",
+        "actual": 138,
+        "predicted": 110
+      },
+      {
+        "datetime": "2012-12-03T07:00",
+        "actual": 396,
+        "predicted": 297
+      },
+      {
+        "datetime": "2012-12-03T08:00",
+        "actual": 731,
+        "predicted": 591
+      },
+      {
+        "datetime": "2012-12-03T09:00",
+        "actual": 308,
+        "predicted": 292
+      },
+      {
+        "datetime": "2012-12-03T10:00",
+        "actual": 136,
+        "predicted": 210
+      },
+      {
+        "datetime": "2012-12-03T11:00",
+        "actual": 233,
+        "predicted": 211
+      },
+      {
+        "datetime": "2012-12-03T12:00",
+        "actual": 268,
+        "predicted": 270
+      },
+      {
+        "datetime": "2012-12-03T13:00",
+        "actual": 321,
+        "predicted": 284
+      },
+      {
+        "datetime": "2012-12-03T14:00",
+        "actual": 260,
+        "predicted": 274
+      },
+      {
+        "datetime": "2012-12-03T15:00",
+        "actual": 268,
+        "predicted": 282
+      },
+      {
+        "datetime": "2012-12-03T16:00",
+        "actual": 442,
+        "predicted": 409
+      },
+      {
+        "datetime": "2012-12-03T17:00",
+        "actual": 708,
+        "predicted": 610
+      },
+      {
+        "datetime": "2012-12-03T18:00",
+        "actual": 692,
+        "predicted": 583
+      },
+      {
+        "datetime": "2012-12-03T19:00",
+        "actual": 471,
+        "predicted": 432
+      },
+      {
+        "datetime": "2012-12-03T20:00",
+        "actual": 300,
+        "predicted": 284
+      },
+      {
+        "datetime": "2012-12-03T21:00",
+        "actual": 221,
+        "predicted": 196
+      },
+      {
+        "datetime": "2012-12-03T22:00",
+        "actual": 144,
+        "predicted": 127
+      },
+      {
+        "datetime": "2012-12-03T23:00",
+        "actual": 102,
+        "predicted": 81
+      }
+    ]
+  },
+  "function_version": "1",
+  "identity": {
+    "region": "ap-northeast-2",
+    "function": "bike-demand-predict",
+    "function_version": "1",
+    "revision_id": "24d5b466-6af6-4034-b540-7d244c0f60a7",
+    "code_sha256": "C+vlweAa5sGSuH1YsXXAFVMSSOvg/FTM1Wb1kaC8gGY=",
+    "model_uri": "s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/f6186c0a8811/model.joblib?versionId=VPQXGVy6XJ9.RiDv8724ICuSak6XCT7D",
+    "model_version": "hgb-v1",
+    "model_sha256": "f6186c0a881176ccb676683346571a8fa1c5fc52aa0a4cfd0c6768d241bfded0"
+  }
+}
