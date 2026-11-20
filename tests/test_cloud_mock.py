@@ -597,7 +597,8 @@ def test_smoke_waits_for_model_permission(sandbox, monkeypatch):
         assert smoke["readiness"]["attempts"] == 2 and smoke["readiness"]["waited_for_permissions"] is True
         calls["n"] = 0
         assert run(["smoke"]) == 1
-    assert read(sandbox, "results/service_check/cloud.json")["readiness"]["attempts"] == 2
+    second = failed_result(sandbox, records(sandbox)[-1], "results/service_check/cloud.json")
+    assert second["readiness"] == {"skipped": True}
 
 
 def test_status_fails_when_own_region_unreachable(sandbox, monkeypatch):
@@ -1345,3 +1346,13 @@ def test_ignore_region_refuses_a_reachable_region(sandbox, monkeypatch):
         functions = boto3.client("lambda", region_name="us-west-2").list_functions()["Functions"]
         roles = boto3.client("iam", region_name="ap-northeast-2").list_roles()["Roles"]
     assert rc == 1 and "접속할 수 있습니다" in records(sandbox)[-1]["error"] and len(functions) == 1 and len(roles) == 1
+
+
+def test_unknown_bucket_next_to_our_bucket_counts_as_unknown():
+    from types import SimpleNamespace
+
+    found = {"a": {"exists": True, "name": "a", "ours": None}, "b": {"exists": True, "name": "b", "ours": True}}
+    fake = SimpleNamespace(buckets=["a", "b"], one_bucket_status=lambda name: found[name])
+    status = cloud.Cloud.bucket_status(fake)
+    resources = {"iam_role": {"exists": False}, "regions": {"r": {"s3_bucket": status}}}
+    assert status["ours"] is None and not cloud.status_complete(resources, [])

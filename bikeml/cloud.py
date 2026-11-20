@@ -480,7 +480,7 @@ class Cloud:
         except ClientError as e:
             if _code(e) != "InvalidParameterValueException":
                 raise
-            return {"set": False, "reason": f"계정 동시 실행 한도가 낮아 예약하지 못함: {e}"}
+            return {"set": False, "reason": f"예약 동시성을 설정하지 못함(대개 계정 동시 실행 한도가 낮을 때): {e}"}
 
     def point_alias(self, version: str) -> dict:
         try:
@@ -570,7 +570,7 @@ class Cloud:
         states = [b["exists"] for b in found]
         combined = None if None in states else any(states)
         owners = [b.get("ours") for b in found if b["exists"] is not False]
-        ours = True if True in owners else (None if None in owners else False)
+        ours = None if None in owners else (True if True in owners else False)
         return {"exists": combined, "ours": ours, "buckets": found}
 
     def regional_status(self) -> dict:
