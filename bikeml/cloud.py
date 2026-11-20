@@ -246,11 +246,19 @@ class Cloud:
             return False
         return False
 
-    def ours_or_unknown(self, get_tags) -> bool | None:
+    def ours_or_unknown(self, get_tags, deployed: bool = False) -> bool | None:
         try:
-            return self.ours(get_tags())
+            ours = self.ours(get_tags())
         except Exception:
             return None
+        return None if ours is False and deployed else ours
+
+    def names(self) -> tuple:
+        return (self.fn, self.role, self.boundary_name, self.bucket_base, tags_sha256(self.tags))
+
+    def deployed_regions(self) -> set[str] | None:
+        entry = deploy_history()["pending"].get(self.names())
+        return entry["regions"] if entry else None
 
     def find_log_group(self) -> dict | None:
         for page in self.logs.get_paginator("describe_log_groups").paginate(logGroupNamePrefix=self.log_group):
@@ -542,7 +550,7 @@ class Cloud:
         try:
             tags = self.bucket_tags(name)
             ours = self.ours(tags) or self.leftover_bucket(tags, name)
-            if not ours and not tags and name in recorded_buckets():
+            if not ours and name in recorded_buckets():
                 ours = None
             n, size = 0, 0
             for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=name):
@@ -576,7 +584,8 @@ class Cloud:
             for page in self.lam.get_paginator("list_versions_by_function").paginate(FunctionName=self.fn):
                 versions += [v["Version"] for v in page["Versions"]]
             out["lambda_function"] = {
-                "exists": True, "ours": self.ours_or_unknown(self.function_tags),
+                "exists": True,
+                "ours": self.ours_or_unknown(self.function_tags, self.region in (self.deployed_regions() or ())),
                 "state": conf.get("State"), "package_type": conf.get("PackageType"), "runtime": conf.get("Runtime"),
                 "memory_mb": conf.get("MemorySize"), "timeout_s": conf.get("Timeout"),
                 "last_modified": conf.get("LastModified"), "versions": versions,
@@ -595,7 +604,8 @@ class Cloud:
         except ClientError as e:
             out["log_group"] = {"exists": None, "error": _code(e)}
             return out
-        out["log_group"] = ({"exists": True, "ours": self.ours_or_unknown(self.log_group_tags),
+        out["log_group"] = ({"exists": True, "ours": self.ours_or_unknown(
+                                 self.log_group_tags, self.region in (self.deployed_regions() or ())),
                              "retention_days": g.get("retentionInDays"),
                              "stored_bytes": g.get("storedBytes")} if g else {"exists": False})
         return out
@@ -606,7 +616,8 @@ class Cloud:
         try:
             role = self.iam.get_role(RoleName=self.role)["Role"]
             pols = self.iam.list_role_policies(RoleName=self.role)["PolicyNames"]
-            return {"exists": True, "ours": self.ours_or_unknown(self.role_tags), "inline_policies": pols,
+            return {"exists": True, "ours": self.ours_or_unknown(self.role_tags, self.deployed_regions() is not None),
+                    "inline_policies": pols,
                     "permissions_boundary": (role.get("PermissionsBoundary") or {}).get("PermissionsBoundaryArn")}
         except self.iam.exceptions.NoSuchEntityException:
             return {"exists": False}
@@ -1202,8 +1213,12 @@ def recorded_buckets() -> set[str]:
     return deploy_history()["buckets"]
 
 
+def _ignored_arg(ctx) -> list[str]:
+    return sorted(set(getattr(ctx.args, "ignore_region", None) or []))
+
+
 def ignored_regions(ctx) -> list[str]:
-    names = sorted(set(getattr(ctx.args, "ignore_region", None) or []))
+    names = _ignored_arg(ctx)
     bad = [r for r in names if not re.fullmatch(r"[a-z]{2}(?:-[a-z]+)+-\d+", r)]
     if bad:
         raise RuntimeError(f"--ignore-region 에 리전 이름이 아닌 값이 있습니다: {bad}")
@@ -1237,15 +1252,21 @@ def _clouds(ctx) -> tuple[list[Cloud], list[dict]]:
     own |= {d["region"] for d in deployments() if d["account"] == account_key(first.account)}
     if first.configured_region:
         own.add(first.configured_region)
-    regions = (set(known_regions(ctx.cfg, ctx.args, first.account)) | own) - ignored
+    regions = set(known_regions(ctx.cfg, ctx.args, first.account)) | own | ignored
     clouds = [first]
     for r in sorted(regions - {first.region}):
         try:
-            clouds.append(Cloud(ctx.cfg, ctx.args, ctx, region=r))
+            c = Cloud(ctx.cfg, ctx.args, ctx, region=r)
         except Exception as e:
+            if r in ignored:
+                continue
             code = _code(e) if isinstance(e, ClientError) else ""
             unreachable.append({"region": r, "own": r in own, "blocking": r in own or code not in NOT_ENABLED,
                                 "error": f"{type(e).__name__}: {e}"})
+            continue
+        if r in ignored:
+            raise RuntimeError(f"--ignore-region {r} 에 접속할 수 있습니다. 접속되지 않는 리전만 뺄 수 있습니다")
+        clouds.append(c)
     for c in clouds:
         added = extra.get(c.region, set()) - set(c.buckets)
         if added:
@@ -1279,6 +1300,7 @@ def step_status(ctx) -> None:
         boundary = clouds[0].boundary_status()
     except BaseException as e:
         write_json(ctx.out(f"results/cloud/{name}.json"), {"checked_at": now_iso(), **ctx.cloud,
+                                                          "regions_ignored": _ignored_arg(ctx),
                                                           "interrupted": f"{type(e).__name__}: {e}"})
         raise
     st = {"checked_at": now_iso(), "regions_checked": [c.region for c in clouds], **clouds[0].info(),
@@ -1295,7 +1317,8 @@ def step_status(ctx) -> None:
     if renamed:
         raise RuntimeError(RENAMED.format(names=renamed))
     if not status_complete(resources, unreachable) or st["permissions_boundary"].get("exists") is None:
-        raise RuntimeError("일부 자원이나 리전의 상태를 확인하지 못했습니다. 결과 파일의 regions_unreachable, exists=null 항목을 보세요")
+        raise RuntimeError("일부 자원이나 리전의 상태를 확인하지 못했습니다. 결과 파일의 regions_unreachable 와 "
+                           "exists=null, ours=null 항목을 보세요(ours=null 은 이 도구가 만든 기록이 있는데 태그가 맞지 않는 자원)")
 
 
 BROKEN_RUN_LOG = ("runs/run_log.jsonl 에 읽을 수 없는 줄이 {n}개 있어, 그 줄에 적힌 리전이나 버킷을 놓쳤을 수 있습니다. "
@@ -1351,6 +1374,7 @@ def step_cleanup(ctx) -> None:
     renamed, current_pending = renamed_leftovers(ctx.cfg)
     if renamed and not current_pending:
         write_json(ctx.out("results/cloud/cleanup.json"), {"cleaned_at": now_iso(), "refused": True,
+                                                           "regions_ignored": _ignored_arg(ctx),
                                                            "renamed_leftovers": renamed, "actions": []})
         raise RuntimeError(RENAMED.format(names=renamed) + ". 지금 이름으로 배포한 기록이 없고, 이전 배포와 버킷이나 역할을 "
                            "같이 쓸 수 있어 아무것도 지우지 않았습니다")
@@ -1359,7 +1383,8 @@ def step_cleanup(ctx) -> None:
     try:
         report = _cleanup_all(clouds, unreachable, broken, renamed, deleted)
     except BaseException as e:
-        write_json(ctx.out("results/cloud/cleanup.json"), {"cleaned_at": now_iso(), "interrupted": f"{type(e).__name__}: {e}",
+        write_json(ctx.out("results/cloud/cleanup.json"), {"cleaned_at": now_iso(), "regions_ignored": _ignored_arg(ctx),
+                                                           "interrupted": f"{type(e).__name__}: {e}",
                                                            "actions": deleted, "all_gone": False})
         ctx.summary = {"all_gone": False, "actions": {d["resource"]: d["result"] for d in deleted}}
         raise

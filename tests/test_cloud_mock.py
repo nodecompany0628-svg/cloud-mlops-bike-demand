@@ -191,10 +191,11 @@ def test_role_without_project_tags_is_left_alone(sandbox, monkeypatch):
         rc_deploy = run(["deploy"])
         created = boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]
         created += iam.list_policies(Scope="Local")["Policies"]
+        state_after_refusal = cloud.deployments()
         rc_clean = run(["cleanup"])
         roles = [r["RoleName"] for r in iam.list_roles()["Roles"]]
     recs = records(sandbox)
-    assert rc_deploy == 1 and "IAM 역할" in recs[0]["error"] and created == []
+    assert rc_deploy == 1 and "IAM 역할" in recs[0]["error"] and created == [] and state_after_refusal == []
     assert rc_clean == 0 and "bike-demand-predict-role" in roles
     assert read(sandbox, "results/cloud/cleanup.json")["not_ours"] == ["iam_role"]
 
@@ -367,10 +368,11 @@ def test_two_buckets_block_deploy_but_cleanup_removes_both(sandbox):
         rc_deploy = run(["deploy"])
         iam = boto3.client("iam", region_name="ap-northeast-2")
         iam_after_refusal = iam.list_roles()["Roles"] + iam.list_policies(Scope="Local")["Policies"]
+        state_after_refusal = cloud.deployments()
         rc_clean = run(["cleanup"])
         left = [b["Name"] for b in s3.list_buckets()["Buckets"]]
     recs = records(sandbox)
-    assert rc_deploy == 1 and "버킷이 여러 개" in recs[0]["error"] and iam_after_refusal == []
+    assert rc_deploy == 1 and "버킷이 여러 개" in recs[0]["error"] and iam_after_refusal == [] and state_after_refusal == []
     assert rc_clean == 0 and left == []
 
 
@@ -1294,3 +1296,52 @@ def test_recorded_bucket_that_lost_its_tags_is_not_dropped(sandbox, monkeypatch)
         left = [b["Name"] for b in s3.list_buckets()["Buckets"]]
     clean = failed_result(sandbox, records(sandbox)[-1], "results/cloud/cleanup.json")
     assert rc == 1 and left == [name] and clean["all_gone"] is False
+
+
+def deploy_then_untag(monkeypatch, untag):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        assert run(["deploy"]) == 0
+        untag()
+        rc = run(["cleanup"])
+        left = {
+            "buckets": [b["Name"] for b in boto3.client("s3", region_name="ap-northeast-2").list_buckets()["Buckets"]],
+            "roles": [r["RoleName"] for r in boto3.client("iam", region_name="ap-northeast-2").list_roles()["Roles"]],
+            "groups": [g["logGroupName"] for g in boto3.client("logs", region_name="ap-northeast-2").describe_log_groups()["logGroups"]],
+        }
+    return rc, left
+
+
+def test_recorded_bucket_with_one_tag_removed_is_not_dropped(sandbox, monkeypatch):
+    def untag():
+        s3 = boto3.client("s3", region_name="ap-northeast-2")
+        name = s3.list_buckets()["Buckets"][0]["Name"]
+        s3.put_bucket_tagging(Bucket=name, Tagging={"TagSet": [{"Key": "project", "Value": "cloud-mlops-assignment"}]})
+    rc, left = deploy_then_untag(monkeypatch, untag)
+    assert rc == 1 and len(left["buckets"]) == 1
+
+
+def test_log_group_that_lost_its_tags_is_not_dropped(sandbox, monkeypatch):
+    def untag():
+        boto3.client("logs", region_name="ap-northeast-2").untag_log_group(
+            logGroupName="/aws/lambda/bike-demand-predict", tags=["project", "owner"])
+    rc, left = deploy_then_untag(monkeypatch, untag)
+    assert rc == 1 and left["groups"] == ["/aws/lambda/bike-demand-predict"]
+
+
+def test_role_that_lost_its_tags_is_not_dropped(sandbox, monkeypatch):
+    def untag():
+        boto3.client("iam", region_name="ap-northeast-2").untag_role(
+            RoleName="bike-demand-predict-role", TagKeys=["project", "owner"])
+    rc, left = deploy_then_untag(monkeypatch, untag)
+    assert rc == 1 and left["roles"] == ["bike-demand-predict-role"]
+
+
+def test_ignore_region_refuses_a_reachable_region(sandbox, monkeypatch):
+    monkeypatch.setattr(cloud, "STATUS_WAIT_S", 0)
+    with mock_aws():
+        assert run(["deploy"], region="us-west-2") == 0
+        rc = run(["cleanup"], ignore_region=["us-west-2"])
+        functions = boto3.client("lambda", region_name="us-west-2").list_functions()["Functions"]
+        roles = boto3.client("iam", region_name="ap-northeast-2").list_roles()["Roles"]
+    assert rc == 1 and "접속할 수 있습니다" in records(sandbox)[-1]["error"] and len(functions) == 1 and len(roles) == 1
