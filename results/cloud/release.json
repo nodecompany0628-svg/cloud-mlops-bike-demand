@@ -1,5 +1,5 @@
 {
-  "released_at": "2026-11-20T13:36:22+09:00",
+  "released_at": "2026-11-20T13:43:55+09:00",
   "region": "ap-northeast-2",
   "credentials": "profile",
   "caller_type": "root",
@@ -14,21 +14,21 @@
   "tags_sha256": "3d2414b38f31e600fe5e4ac2587e3f1664bfee741f167ad68ad64f9936144328",
   "bucket": "bike-demand-mlops-ap-northeast-2-8956a8fe",
   "log_group": "/aws/lambda/bike-demand-predict",
-  "function_version": "3",
+  "function_version": "4",
   "identity": {
     "region": "ap-northeast-2",
     "function": "bike-demand-predict",
-    "function_version": "3",
-    "revision_id": "b9c702fd-ad32-404f-aac4-95d7bae52129",
+    "function_version": "4",
+    "revision_id": "a02548a5-5894-44a8-945b-8cfae8447314",
     "code_sha256": "C+vlweAa5sGSuH1YsXXAFVMSSOvg/FTM1Wb1kaC8gGY=",
     "model_uri": "s3://bike-demand-mlops-ap-northeast-2-8956a8fe/models/hgb-v1/f6186c0a8811/model.joblib?versionId=VPQXGVy6XJ9.RiDv8724ICuSak6XCT7D",
     "model_version": "hgb-v1",
     "model_sha256": "f6186c0a881176ccb676683346571a8fa1c5fc52aa0a4cfd0c6768d241bfded0"
   },
-  "previous_live": "1",
+  "previous_live": "3",
   "alias": {
     "alias": "live",
-    "version": "3",
+    "version": "4",
     "action": "updated"
   }
 }
