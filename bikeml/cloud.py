@@ -23,7 +23,12 @@ from .common import (
 )
 from .evaluate import daily_mae, metrics
 from .runlog import git_info, now_iso, read_run_log, sanitize
-from .servicecheck import expected_model, run_cases, sample_day_comparison
+from .servicecheck import (
+    SAMPLE_DAY_PROBLEM,
+    expected_model,
+    run_cases,
+    sample_day_comparison,
+)
 
 LAMBDA_TRUST = {
     "Version": "2012-10-17",
@@ -1122,7 +1127,7 @@ def step_smoke(ctx) -> None:
     report["identity"] = identity
     if day is None:
         report["all_passed"] = False
-        report.setdefault("problems", []).append("예시 날짜 비교를 만들지 못함 (prepare 결과 확인)")
+        report.setdefault("problems", []).append(SAMPLE_DAY_PROBLEM)
     write_json(ctx.out("results/service_check/cloud.json"), report)
     ctx.summary = {"passed": report["passed"], "total": report["total"], "function_version": version}
     if not report["all_passed"]:

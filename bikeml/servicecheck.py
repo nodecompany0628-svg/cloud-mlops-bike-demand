@@ -116,6 +116,9 @@ def run_cases(invoke, expected_model: dict, target: str, cfg: dict, secrets=()) 
             "responses": responses}
 
 
+SAMPLE_DAY_PROBLEM = "예시 날짜 비교를 만들지 못함 (normal_day_24h 응답과 prepare 결과 확인)"
+
+
 def sample_day_comparison(responses: dict, cfg: dict) -> dict | None:
     day = cfg["evaluation"]["sample_day"]
     actual_path = ROOT / "samples" / "generated" / f"actual_{day}.json"
@@ -166,7 +169,7 @@ def step_check_local(ctx) -> None:
     report["sample_day"] = day
     if day is None:
         report["all_passed"] = False
-        report["problems"] = ["예시 날짜 비교를 만들지 못함 (prepare 결과 확인)"]
+        report["problems"] = [SAMPLE_DAY_PROBLEM]
     write_json(ctx.out("results/service_check/local.json"), report)
     ctx.summary = {"passed": report["passed"], "total": report["total"],
                    "sample_day_mae": day["mae"] if day else None}
